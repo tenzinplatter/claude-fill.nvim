@@ -19,6 +19,7 @@ local uuid = require('claude_fill.uuid')
 ---@class claude_fill.Waiters
 ---@field entries table<integer, claude_fill.PrimerWaiter>
 ---@field next_id integer
+---@field reporter claude_fill.PrimerWaiter|nil
 
 ---@class claude_fill.PrimerHandle
 ---@field leave fun()
@@ -27,6 +28,7 @@ local uuid = require('claude_fill.uuid')
 ---@field kind 'ready'
 ---@field session_id string
 ---@field head claude_fill.Head
+---@field failed_head claude_fill.Head|nil
 
 ---@alias claude_fill.PrimerState
 ---| { kind: 'absent' }
@@ -86,16 +88,25 @@ local function add_waiter(waiters, waiter)
   }
 end
 
+---@param waiter claude_fill.PrimerWaiter
+---@param result claude_fill.PrimerResult
+local function call_waiter(waiter, result)
+  local ok, err = pcall(waiter, result)
+  if not ok then
+    vim.notify('claude-fill: ' .. tostring(err), vim.log.levels.ERROR)
+  end
+end
+
 ---@param waiters claude_fill.Waiters
 ---@param result claude_fill.PrimerResult
 local function notify_waiters(waiters, result)
   local ids = vim.tbl_keys(waiters.entries)
   table.sort(ids)
   for _, id in ipairs(ids) do
-    local ok, err = pcall(waiters.entries[id], result)
-    if not ok then
-      vim.notify('claude-fill: ' .. tostring(err), vim.log.levels.ERROR)
-    end
+    call_waiter(waiters.entries[id], result)
+  end
+  if waiters.reporter then
+    call_waiter(waiters.reporter, result)
   end
 end
 
@@ -137,9 +148,14 @@ end
 
 ---@param project_root string
 ---@param message string
-local function settle_failed(project_root, message)
+---@param head claude_fill.Head
+local function settle_failed(project_root, message, head)
   local state = state_of(project_root)
-  all_states()[project_root] = state.kind == 'rebuilding' and state.current or nil
+  if state.kind == 'rebuilding' then
+    all_states()[project_root] = vim.tbl_extend('force', state.current, { failed_head = head })
+  else
+    all_states()[project_root] = nil
+  end
   notify_waiters(waiters_of(state), { kind = 'failed', message = FAILURE_PREFIX .. message })
 end
 
@@ -168,53 +184,26 @@ local function run_build(project_root, head, session_id)
     if event.kind == 'done' then
       settle_ready(project_root, session_id, head)
     elseif event.kind == 'crashed' then
-      settle_failed(project_root, cli.crash_message(event))
+      settle_failed(project_root, cli.crash_message(event), head)
     end
   end)
 end
 
 ---@param project_root string
 ---@param previous claude_fill.ReadyPrimer|nil
+---@param head claude_fill.Head
+---@param reporter claude_fill.PrimerWaiter|nil
 ---@return claude_fill.Waiters
-local function start_build(project_root, previous)
+local function start_build(project_root, previous, head, reporter)
   local waiters = new_waiters()
+  waiters.reporter = reporter
   if previous then
     all_states()[project_root] = { kind = 'rebuilding', current = previous, waiters = waiters }
   else
     all_states()[project_root] = { kind = 'building', waiters = waiters }
   end
-  run_build(project_root, root.head(project_root), uuid.v4())
+  run_build(project_root, head, uuid.v4())
   return waiters
-end
-
----@param project_root string
----@param waiter claude_fill.PrimerWaiter
----@return claude_fill.PrimerHandle
-function M.acquire(project_root, waiter)
-  local state = state_of(project_root)
-  if state.kind == 'ready' then
-    return deliver_later(waiter, { kind = 'ready', session_id = state.session_id })
-  end
-  if state.kind == 'rebuilding' then
-    return deliver_later(waiter, { kind = 'ready', session_id = state.current.session_id })
-  end
-  if state.kind == 'building' then
-    return add_waiter(state.waiters, waiter)
-  end
-  return add_waiter(start_build(project_root, nil), waiter)
-end
-
----@param project_root string
----@param session_id string
-function M.invalidate(project_root, session_id)
-  local state = state_of(project_root)
-  if state.kind == 'ready' and state.session_id == session_id then
-    all_states()[project_root] = nil
-    persist(project_root, nil)
-  elseif state.kind == 'rebuilding' and state.current.session_id == session_id then
-    all_states()[project_root] = { kind = 'building', waiters = state.waiters }
-    persist(project_root, nil)
-  end
 end
 
 ---@param result claude_fill.PrimerResult
@@ -226,14 +215,81 @@ local function report(result)
   end
 end
 
+---@param primer claude_fill.ReadyPrimer
+---@param head claude_fill.HeadReading
+---@return boolean
+local function is_stale(primer, head)
+  if head.kind == 'unreadable' then
+    return false
+  end
+  return not vim.deep_equal(primer.head, head.head)
+    and not vim.deep_equal(primer.failed_head, head.head)
+end
+
+---@param project_root string
+---@param primer claude_fill.ReadyPrimer
+local function rebuild_if_stale(project_root, primer)
+  local head = root.head(project_root)
+  if is_stale(primer, head) then
+    start_build(project_root, primer, head.head, report)
+  end
+end
+
+---@param message string
+---@return string
+local function unreadable_message(message)
+  return 'cannot read git HEAD: ' .. message
+end
+
+---@param project_root string
+---@param waiter claude_fill.PrimerWaiter
+---@return claude_fill.PrimerHandle
+function M.acquire(project_root, waiter)
+  local state = state_of(project_root)
+  if state.kind == 'ready' then
+    rebuild_if_stale(project_root, state)
+    return deliver_later(waiter, { kind = 'ready', session_id = state.session_id })
+  end
+  if state.kind == 'rebuilding' then
+    return deliver_later(waiter, { kind = 'ready', session_id = state.current.session_id })
+  end
+  if state.kind == 'building' then
+    return add_waiter(state.waiters, waiter)
+  end
+  local head = root.head(project_root)
+  if head.kind == 'unreadable' then
+    return deliver_later(waiter, { kind = 'failed', message = unreadable_message(head.error) })
+  end
+  return add_waiter(start_build(project_root, nil, head.head, nil), waiter)
+end
+
+---@param project_root string
+---@param session_id string
+function M.invalidate(project_root, session_id)
+  local state = state_of(project_root)
+  if state.kind == 'ready' and state.session_id == session_id then
+    all_states()[project_root] = nil
+    persist(project_root, nil)
+  elseif state.kind == 'rebuilding' and state.current.session_id == session_id then
+    state.waiters.reporter = nil
+    all_states()[project_root] = { kind = 'building', waiters = state.waiters }
+    persist(project_root, nil)
+  end
+end
+
 ---@param project_root string
 function M.prime(project_root)
   local state = state_of(project_root)
   if state.kind == 'building' or state.kind == 'rebuilding' then
+    state.waiters.reporter = report
     return vim.notify('claude-fill: primer is already being built')
   end
+  local head = root.head(project_root)
+  if head.kind == 'unreadable' then
+    return report({ kind = 'failed', message = unreadable_message(head.error) })
+  end
   vim.notify('claude-fill: priming ' .. project_root)
-  add_waiter(start_build(project_root, state.kind == 'ready' and state or nil), report)
+  start_build(project_root, state.kind == 'ready' and state or nil, head.head, report)
 end
 
 return M
