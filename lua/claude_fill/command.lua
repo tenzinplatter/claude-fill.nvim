@@ -1,3 +1,4 @@
+local notify = require('claude_fill.notify')
 local primer = require('claude_fill.primer')
 local root = require('claude_fill.root')
 local target_mod = require('claude_fill.target')
@@ -23,19 +24,14 @@ local function start_with(target, instruction)
   require('claude_fill.fill').start(target, instruction)
 end
 
----@param message string
-local function notify_error(message)
-  vim.notify('claude-fill: ' .. message, vim.log.levels.ERROR)
-end
-
 ---@param opts vim.api.keyset.create_user_command.command_args
 local function prime(opts)
   if opts.range ~= 0 then
-    return notify_error('prime does not take a range')
+    return notify.error('prime does not take a range')
   end
   local project_root = root.of_buffer(vim.api.nvim_get_current_buf())
   if not project_root then
-    return notify_error('buffer is not a file inside a git repository')
+    return notify.error('buffer is not a file inside a git repository')
   end
   primer.prime(project_root)
 end
@@ -43,11 +39,11 @@ end
 ---@param opts vim.api.keyset.create_user_command.command_args
 local function cancel(opts)
   if opts.range ~= 0 then
-    return notify_error('cancel does not take a range')
+    return notify.error('cancel does not take a range')
   end
   local row = vim.api.nvim_win_get_cursor(0)[1] - 1
   if not require('claude_fill.fill').cancel_at(vim.api.nvim_get_current_buf(), row) then
-    notify_error('no active fill at the cursor')
+    notify.error('no active fill at the cursor')
   end
 end
 

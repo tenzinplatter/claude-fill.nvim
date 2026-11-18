@@ -1,5 +1,6 @@
 local cli = require('claude_fill.cli')
 local config = require('claude_fill.config')
+local notify = require('claude_fill.notify')
 local prompt = require('claude_fill.prompt')
 local root = require('claude_fill.root')
 local store = require('claude_fill.primer_store')
@@ -33,7 +34,7 @@ local uuid = require('claude_fill.uuid')
 ---@alias claude_fill.PrimerState
 ---| { kind: 'absent' }
 ---| { kind: 'building', waiters: claude_fill.Waiters }
----| { kind: 'rebuilding', current: claude_fill.ReadyPrimer, waiters: claude_fill.Waiters }
+---| { kind: 'rebuilding', current: claude_fill.ReadyPrimer, reporter: claude_fill.PrimerWaiter|nil }
 ---| claude_fill.ReadyPrimer
 
 local M = {}
@@ -69,9 +70,10 @@ local function persist(project_root, record)
   end
 end
 
+---@param reporter claude_fill.PrimerWaiter|nil
 ---@return claude_fill.Waiters
-local function new_waiters()
-  return { entries = {}, next_id = 1 }
+local function new_waiters(reporter)
+  return { entries = {}, next_id = 1, reporter = reporter }
 end
 
 ---@param waiters claude_fill.Waiters
@@ -93,7 +95,7 @@ end
 local function call_waiter(waiter, result)
   local ok, err = pcall(waiter, result)
   if not ok then
-    vim.notify('claude-fill: ' .. tostring(err), vim.log.levels.ERROR)
+    notify.error(tostring(err))
   end
 end
 
@@ -105,7 +107,7 @@ local function notify_waiters(waiters, result)
   for _, id in ipairs(ids) do
     call_waiter(waiters.entries[id], result)
   end
-  if waiters.reporter then
+  if waiters.reporter and (result.kind == 'ready' or next(waiters.entries) == nil) then
     call_waiter(waiters.reporter, result)
   end
 end
@@ -113,8 +115,10 @@ end
 ---@param state claude_fill.PrimerState
 ---@return claude_fill.Waiters
 local function waiters_of(state)
-  if state.kind == 'building' or state.kind == 'rebuilding' then
+  if state.kind == 'building' then
     return state.waiters
+  elseif state.kind == 'rebuilding' then
+    return new_waiters(state.reporter)
   end
   return new_waiters()
 end
@@ -126,7 +130,7 @@ local function deliver_later(waiter, result)
   local left = false
   vim.schedule(function()
     if not left then
-      waiter(result)
+      call_waiter(waiter, result)
     end
   end)
   return {
@@ -190,28 +194,41 @@ local function run_build(project_root, head, session_id)
 end
 
 ---@param project_root string
----@param previous claude_fill.ReadyPrimer|nil
 ---@param head claude_fill.Head
 ---@param reporter claude_fill.PrimerWaiter|nil
 ---@return claude_fill.Waiters
-local function start_build(project_root, previous, head, reporter)
-  local waiters = new_waiters()
-  waiters.reporter = reporter
-  if previous then
-    all_states()[project_root] = { kind = 'rebuilding', current = previous, waiters = waiters }
-  else
-    all_states()[project_root] = { kind = 'building', waiters = waiters }
-  end
+local function start_first_build(project_root, head, reporter)
+  local waiters = new_waiters(reporter)
+  all_states()[project_root] = { kind = 'building', waiters = waiters }
   run_build(project_root, head, uuid.v4())
   return waiters
 end
 
+---@param project_root string
+---@param previous claude_fill.ReadyPrimer
+---@param head claude_fill.Head
+---@param reporter claude_fill.PrimerWaiter
+local function start_rebuild(project_root, previous, head, reporter)
+  all_states()[project_root] = { kind = 'rebuilding', current = previous, reporter = reporter }
+  run_build(project_root, head, uuid.v4())
+end
+
+---@param state claude_fill.PrimerState
+---@param reporter claude_fill.PrimerWaiter
+local function attach_reporter(state, reporter)
+  if state.kind == 'building' then
+    state.waiters.reporter = reporter
+  elseif state.kind == 'rebuilding' then
+    state.reporter = reporter
+  end
+end
+
 ---@param result claude_fill.PrimerResult
-local function report(result)
+local function report_build(result)
   if result.kind == 'ready' then
     vim.notify('claude-fill: primer ready')
   else
-    vim.notify('claude-fill: ' .. result.message, vim.log.levels.ERROR)
+    notify.error(result.message)
   end
 end
 
@@ -231,7 +248,7 @@ end
 local function rebuild_if_stale(project_root, primer)
   local head = root.head(project_root)
   if is_stale(primer, head) then
-    start_build(project_root, primer, head.head, report)
+    start_rebuild(project_root, primer, head.head, report_build)
   end
 end
 
@@ -260,7 +277,7 @@ function M.acquire(project_root, waiter)
   if head.kind == 'unreadable' then
     return deliver_later(waiter, { kind = 'failed', message = unreadable_message(head.error) })
   end
-  return add_waiter(start_build(project_root, nil, head.head, nil), waiter)
+  return add_waiter(start_first_build(project_root, head.head, nil), waiter)
 end
 
 ---@param project_root string
@@ -271,9 +288,19 @@ function M.invalidate(project_root, session_id)
     all_states()[project_root] = nil
     persist(project_root, nil)
   elseif state.kind == 'rebuilding' and state.current.session_id == session_id then
-    state.waiters.reporter = nil
-    all_states()[project_root] = { kind = 'building', waiters = state.waiters }
+    all_states()[project_root] = { kind = 'building', waiters = new_waiters(state.reporter) }
     persist(project_root, nil)
+  end
+end
+
+---@param project_root string
+---@param state claude_fill.PrimerState
+---@param head claude_fill.Head
+local function start_build_for(project_root, state, head)
+  if state.kind == 'ready' then
+    start_rebuild(project_root, state, head, report_build)
+  else
+    start_first_build(project_root, head, report_build)
   end
 end
 
@@ -281,15 +308,15 @@ end
 function M.prime(project_root)
   local state = state_of(project_root)
   if state.kind == 'building' or state.kind == 'rebuilding' then
-    state.waiters.reporter = report
+    attach_reporter(state, report_build)
     return vim.notify('claude-fill: primer is already being built')
   end
   local head = root.head(project_root)
   if head.kind == 'unreadable' then
-    return report({ kind = 'failed', message = unreadable_message(head.error) })
+    return report_build({ kind = 'failed', message = unreadable_message(head.error) })
   end
   vim.notify('claude-fill: priming ' .. project_root)
-  start_build(project_root, state.kind == 'ready' and state or nil, head.head, report)
+  start_build_for(project_root, state, head.head)
 end
 
 return M

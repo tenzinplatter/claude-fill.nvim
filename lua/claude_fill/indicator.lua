@@ -129,6 +129,12 @@ function M.show_step(indicator, step)
 end
 
 ---@param indicator claude_fill.Indicator
+function M.show_working(indicator)
+  indicator.text = 'Working'
+  echo_progress(indicator.title, indicator.text, 'running', indicator.progress_id)
+end
+
+---@param indicator claude_fill.Indicator
 ---@param status claude_fill.ProgressStatus
 function M.stop(indicator, status)
   local state = indicator.state

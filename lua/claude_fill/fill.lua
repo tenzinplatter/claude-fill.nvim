@@ -1,6 +1,7 @@
 local cli = require('claude_fill.cli')
 local config = require('claude_fill.config')
 local indicator_mod = require('claude_fill.indicator')
+local notify = require('claude_fill.notify')
 local primer = require('claude_fill.primer')
 local prompt = require('claude_fill.prompt')
 local root = require('claude_fill.root')
@@ -68,9 +69,9 @@ local function status_of(outcome)
 end
 
 ---@param outcome claude_fill.Outcome
-local function report(outcome)
+local function report_failure(outcome)
   if outcome.kind == 'failed' then
-    vim.notify('claude-fill: ' .. outcome.message, vim.log.levels.ERROR)
+    notify.error(outcome.message)
   end
 end
 
@@ -79,7 +80,7 @@ end
 local function finish(fill, outcome)
   states[fill] = nil
   target_mod.clear(fill.target)
-  report(outcome)
+  report_failure(outcome)
   indicator_mod.stop(fill.indicator, status_of(outcome))
 end
 
@@ -127,6 +128,7 @@ end
 ---@param primer_id string
 local function refork(fill, primer_id)
   primer.invalidate(fill.project_root, primer_id)
+  indicator_mod.show_working(fill.indicator)
   states[fill] = await_primer(fill, 'retry')
 end
 
@@ -186,7 +188,7 @@ end
 ---@param message string
 local function reject(target, message)
   target_mod.clear(target)
-  vim.notify('claude-fill: ' .. message, vim.log.levels.ERROR)
+  notify.error(message)
 end
 
 ---@param fill claude_fill.Fill
