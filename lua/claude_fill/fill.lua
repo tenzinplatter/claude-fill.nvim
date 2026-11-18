@@ -30,7 +30,7 @@ local target_mod = require('claude_fill.target')
 ---@class claude_fill.Discarded
 ---@field kind 'discarded'
 ---@field instruction string
----@field saved claude_fill.Saved
+---@field replacement claude_fill.DiscardedReplacement
 
 ---@alias claude_fill.Outcome claude_fill.Applied|claude_fill.Failed|claude_fill.Cancelled|claude_fill.Declined|claude_fill.Discarded
 ---@alias claude_fill.Attempt 'first'|'retry'
@@ -106,7 +106,7 @@ local function report(outcome)
   elseif outcome.kind == 'declined' then
     notify.warn(('declined %q: %s'):format(outcome.instruction, outcome.reason))
   elseif outcome.kind == 'discarded' then
-    notify.warn(discard.message(outcome.instruction, outcome.saved))
+    notify.warn(discard.message(outcome.instruction, outcome.replacement))
   end
 end
 
@@ -114,7 +114,7 @@ end
 ---@param outcome claude_fill.Outcome
 local function finish(fill, outcome)
   states[fill] = nil
-  target_mod.clear(target_of(fill))
+  target_mod.release(fill.snapshot)
   report(outcome)
   indicator_mod.stop(fill.indicator, status_of(outcome))
 end
@@ -147,11 +147,11 @@ end
 ---@param lines string[]
 ---@return claude_fill.Outcome
 local function discard_lines(fill, lines)
-  local ok, saved = pcall(discard.save, fill.instruction, lines)
+  local ok, replacement = pcall(discard.save, fill.instruction, lines)
   if not ok then
-    return { kind = 'failed', message = 'could not save replacement: ' .. tostring(saved) }
+    return { kind = 'failed', message = 'could not save replacement: ' .. tostring(replacement) }
   end
-  return { kind = 'discarded', instruction = fill.instruction, saved = saved }
+  return { kind = 'discarded', instruction = fill.instruction, replacement = replacement }
 end
 
 ---@param fill claude_fill.Fill
@@ -281,7 +281,7 @@ local function on_primer(fill, attempt, result)
     return finish(fill, {
       kind = 'discarded',
       instruction = fill.instruction,
-      saved = { kind = 'unfilled' },
+      replacement = { kind = 'none' },
     })
   end
   states[fill] = run_forked(fill, { primer_id = result.session_id, attempt = attempt })

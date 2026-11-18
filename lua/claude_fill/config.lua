@@ -41,17 +41,14 @@ local current = vim.deepcopy(DEFAULTS)
 ---@param register any
 ---@return boolean
 local function is_register(register)
-  if type(register) ~= 'string' or not register:match('^[%l"+*-]$') then
-    return false
-  end
-  return vim.fn.has('clipboard') == 1 or not register:match('^[+*]$')
+  return type(register) == 'string' and register:match('^[%l"+*-]$') ~= nil
 end
 
 ---@param register any
 local function validate_register(register)
   if not is_register(register) then
     error(
-      ('claude-fill: discard_register must be one of a-z, ", -, or (with a clipboard provider) + or *; got %s'):format(
+      ('claude-fill: discard_register must be one of a-z, ", -, + or *; got %s'):format(
         vim.inspect(register)
       )
     )
