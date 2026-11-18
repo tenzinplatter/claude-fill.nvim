@@ -11,16 +11,17 @@
 ---@field kind 'crashed'
 ---@field message string
 ---@field stderr string
+---@field missing_session boolean
 
 ---@alias claude_fill.Event claude_fill.Step|claude_fill.Done|claude_fill.Crashed
 
 ---@alias claude_fill.Session
----| { kind: 'ephemeral' }
 ---| { kind: 'primer', id: string }
 ---| { kind: 'fork', primer_id: string }
 
 ---@class claude_fill.RunSpec
 ---@field session claude_fill.Session
+---@field answer 'required'|'ignored'
 ---@field prompt string
 ---@field schema table
 ---@field model string
@@ -40,6 +41,7 @@
 local M = {}
 
 local ANSWER_TOOL = 'StructuredOutput'
+local MISSING_SESSION = 'No conversation found'
 
 ---@param spec claude_fill.RunSpec
 ---@return string[]
@@ -59,9 +61,6 @@ end
 ---@param session claude_fill.Session
 ---@return string[]
 local function session_flags(session)
-  if session.kind == 'ephemeral' then
-    return { '--no-session-persistence' }
-  end
   if session.kind == 'primer' then
     return { '--session-id', session.id }
   end
@@ -124,25 +123,43 @@ local function failure_message(result, code)
 end
 
 ---@param result claude_fill.ResultEvent|nil
+---@param stderr string
+---@return boolean
+local function is_missing_session(result, stderr)
+  local text = (result and result.result or '') .. stderr
+  return text:find(MISSING_SESSION, 1, true) ~= nil
+end
+
+---@param message string
+---@param stderr string
+---@param result claude_fill.ResultEvent|nil
+---@return claude_fill.Crashed
+local function crashed(message, stderr, result)
+  return {
+    kind = 'crashed',
+    message = message,
+    stderr = stderr,
+    missing_session = is_missing_session(result, stderr),
+  }
+end
+
+---@param result claude_fill.ResultEvent|nil
 ---@param code integer
 ---@param stderr string
+---@param answer 'required'|'ignored'
 ---@return claude_fill.Done|claude_fill.Crashed
-local function terminal_event(result, code, stderr)
+local function terminal_event(result, code, stderr, answer)
   if not result then
-    return {
-      kind = 'crashed',
-      message = ('claude exited with code %d without a result'):format(code),
-      stderr = stderr,
-    }
+    return crashed(('claude exited with code %d without a result'):format(code), stderr, nil)
   end
   if result.is_error or code ~= 0 then
-    return { kind = 'crashed', message = failure_message(result, code), stderr = stderr }
+    return crashed(failure_message(result, code), stderr, result)
   end
-  local answer = result.structured_output and result.structured_output.answer
-  if answer == nil then
-    return { kind = 'crashed', message = 'claude returned no structured answer', stderr = stderr }
+  local value = result.structured_output and result.structured_output.answer
+  if value == nil and answer == 'required' then
+    return crashed('claude returned no structured answer', stderr, result)
   end
-  return { kind = 'done', answer = answer }
+  return { kind = 'done', answer = value }
 end
 
 ---@param emit fun(event: claude_fill.Event)
@@ -206,10 +223,10 @@ function M.run(spec, on_event)
   local emit = vim.schedule_wrap(on_event)
   local feed, result = event_stream(emit)
   local process, err = spawn(spec, feed, function(code, stderr)
-    emit(terminal_event(result(), code, stderr))
+    emit(terminal_event(result(), code, stderr, spec.answer))
   end)
   if not process then
-    emit({ kind = 'crashed', message = err or 'failed to start claude', stderr = '' })
+    emit(crashed(err or 'failed to start claude', '', nil))
     return { cancel = function() end }
   end
   return {

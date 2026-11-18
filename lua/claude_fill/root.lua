@@ -1,3 +1,7 @@
+---@alias claude_fill.Head
+---| { kind: 'commit', sha: string }
+---| { kind: 'unborn' }
+
 local M = {}
 
 ---@param buf integer
@@ -10,15 +14,15 @@ function M.of_buffer(buf)
 end
 
 ---@param project_root string
----@return string|nil
+---@return claude_fill.Head
 function M.head(project_root)
   local result = vim
-    .system({ 'git', 'rev-parse', 'HEAD' }, { cwd = project_root, text = true })
+    .system({ 'git', 'rev-parse', '--verify', '-q', 'HEAD' }, { cwd = project_root, text = true })
     :wait()
   if result.code ~= 0 then
-    return nil
+    return { kind = 'unborn' }
   end
-  return vim.trim(result.stdout)
+  return { kind = 'commit', sha = vim.trim(result.stdout) }
 end
 
 return M

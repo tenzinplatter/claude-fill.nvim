@@ -23,18 +23,20 @@ local target_mod = require('claude_fill.target')
 ---@class claude_fill.Fill
 ---@field target claude_fill.Target
 ---@field indicator claude_fill.Indicator
----@field state { kind: 'awaiting_primer' }|{ kind: 'running', run: claude_fill.Run }|{ kind: 'finished', outcome: claude_fill.Outcome }
+---@field state { kind: 'awaiting_primer', handle: claude_fill.PrimerHandle }|{ kind: 'running', run: claude_fill.Run }|{ kind: 'finished', outcome: claude_fill.Outcome }
 
 local M = {}
 
+local on_primer
+
 ---@type claude_fill.Fill[]
-local running = {}
+local active = {}
 
 ---@param target claude_fill.Target
 ---@return boolean
-local function overlaps_running(target)
-  for _, fill in ipairs(running) do
-    if target_mod.overlaps(fill.target, target) then
+local function overlaps_active(target)
+  for _, fill in ipairs(active) do
+    if target_mod.span(fill.target) and target_mod.overlaps(fill.target, target) then
       return true
     end
   end
@@ -43,11 +45,11 @@ end
 
 ---@param fill claude_fill.Fill
 ---@param outcome claude_fill.Outcome
-local function leave_running(fill, outcome)
+local function leave_active(fill, outcome)
   fill.state = { kind = 'finished', outcome = outcome }
-  running = vim.tbl_filter(function(other)
+  active = vim.tbl_filter(function(other)
     return other ~= fill
-  end, running)
+  end, active)
 end
 
 ---@param outcome claude_fill.Outcome
@@ -60,7 +62,7 @@ end
 ---@param fill claude_fill.Fill
 ---@param outcome claude_fill.Outcome
 local function finish(fill, outcome)
-  leave_running(fill, outcome)
+  leave_active(fill, outcome)
   report(outcome)
   indicator_mod.stop(fill.indicator)
   target_mod.clear(fill.target)
@@ -139,6 +141,7 @@ local function run_spec(target, project_root, instruction, primer_id)
       instruction = instruction,
     }),
     session = { kind = 'fork', primer_id = primer_id },
+    answer = 'required',
     schema = prompt.answer_schema(),
     model = cfg.model,
     tools = cfg.tools,
@@ -154,13 +157,33 @@ local function reject(target, message)
   vim.notify('claude-fill: ' .. message, vim.log.levels.ERROR)
 end
 
+---@param get_fill fun(): claude_fill.Fill
+---@param project_root string
+---@param instruction string
+---@param can_rebuild boolean
+---@return claude_fill.PrimerHandle
+local function request_primer(get_fill, project_root, instruction, can_rebuild)
+  return primer.acquire(project_root, function(result)
+    on_primer(get_fill(), project_root, instruction, can_rebuild, result)
+  end)
+end
+
 ---@param fill claude_fill.Fill
 ---@param project_root string
 ---@param instruction string
 ---@param primer_id string
-local function run_forked(fill, project_root, instruction, primer_id)
+---@param can_rebuild boolean
+local function run_forked(fill, project_root, instruction, primer_id, can_rebuild)
   local spec = run_spec(fill.target, project_root, instruction, primer_id)
   local run = cli.run(spec, function(event)
+    if event.kind == 'crashed' and event.missing_session and can_rebuild then
+      primer.invalidate(project_root, primer_id)
+      local handle = request_primer(function()
+        return fill
+      end, project_root, instruction, false)
+      fill.state = { kind = 'awaiting_primer', handle = handle }
+      return
+    end
     handle_event(fill, event)
   end)
   fill.state = { kind = 'running', run = run }
@@ -169,15 +192,19 @@ end
 ---@param fill claude_fill.Fill
 ---@param project_root string
 ---@param instruction string
+---@param can_rebuild boolean
 ---@param result claude_fill.PrimerResult
-local function on_primer(fill, project_root, instruction, result)
+function on_primer(fill, project_root, instruction, can_rebuild, result)
   if fill.state.kind == 'finished' then
     return
   end
   if result.kind == 'failed' then
     return finish(fill, { kind = 'failed', message = result.message })
   end
-  run_forked(fill, project_root, instruction, result.session_id)
+  if not target_mod.span(fill.target) then
+    return finish(fill, { kind = 'failed', message = 'target no longer exists' })
+  end
+  run_forked(fill, project_root, instruction, result.session_id, can_rebuild)
 end
 
 ---@param target claude_fill.Target
@@ -185,15 +212,16 @@ end
 ---@param instruction string
 local function launch(target, project_root, instruction)
   ---@type claude_fill.Fill
-  local fill = {
+  local fill
+  local handle = request_primer(function()
+    return fill
+  end, project_root, instruction, true)
+  fill = {
     target = target,
     indicator = indicator_mod.start(target),
-    state = { kind = 'awaiting_primer' },
+    state = { kind = 'awaiting_primer', handle = handle },
   }
-  table.insert(running, fill)
-  primer.acquire(project_root, function(result)
-    on_primer(fill, project_root, instruction, result)
-  end)
+  table.insert(active, fill)
 end
 
 ---@param target claude_fill.Target
@@ -203,8 +231,8 @@ function M.start(target, instruction)
   if not project_root then
     return reject(target, 'buffer is not a file inside a git repository')
   end
-  if overlaps_running(target) then
-    return reject(target, 'target overlaps a running fill')
+  if overlaps_active(target) then
+    return reject(target, 'target overlaps an active fill')
   end
   launch(target, project_root, instruction)
 end
