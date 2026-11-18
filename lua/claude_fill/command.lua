@@ -1,4 +1,3 @@
-local fill = require('claude_fill.fill')
 local target_mod = require('claude_fill.target')
 
 local M = {}
@@ -19,7 +18,7 @@ local function start_with(target, instruction)
   if instruction == '' then
     return target_mod.clear(target)
   end
-  fill.start(target, instruction)
+  require('claude_fill.fill').start(target, instruction)
 end
 
 ---@param opts vim.api.keyset.create_user_command.command_args

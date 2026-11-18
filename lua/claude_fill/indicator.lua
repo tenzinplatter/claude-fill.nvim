@@ -1,12 +1,16 @@
 local target_mod = require('claude_fill.target')
 
+---@class claude_fill.Timer
+---@field start fun(self: claude_fill.Timer, timeout: integer, repeat_ms: integer, callback: fun())
+---@field stop fun(self: claude_fill.Timer)
+---@field close fun(self: claude_fill.Timer)
+
 ---@class claude_fill.Indicator
 ---@field target claude_fill.Target
 ---@field mark integer
 ---@field frame integer
 ---@field text string
----@field halt_timer fun()
----@field stopped boolean
+---@field state { kind: 'spinning', timer: claude_fill.Timer }|{ kind: 'stopped' }
 
 local M = {}
 
@@ -49,7 +53,7 @@ end
 ---@param indicator claude_fill.Indicator
 local function render(indicator)
   local buf = indicator.target.buf
-  if indicator.stopped or not vim.api.nvim_buf_is_valid(buf) then
+  if indicator.state.kind == 'stopped' or not vim.api.nvim_buf_is_valid(buf) then
     return
   end
   local first, stop = target_mod.span(indicator.target)
@@ -71,18 +75,14 @@ end
 ---@param target claude_fill.Target
 ---@return claude_fill.Indicator
 function M.start(target)
-  local timer = assert(vim.uv.new_timer())
+  local timer = assert(vim.uv.new_timer()) --[[@as claude_fill.Timer]]
   ---@type claude_fill.Indicator
   local indicator = {
     target = target,
     mark = vim.api.nvim_buf_set_extmark(target.buf, NS, 0, 0, { strict = false }),
     frame = 0,
     text = 'Working',
-    halt_timer = function()
-      timer:stop()
-      timer:close()
-    end,
-    stopped = false,
+    state = { kind = 'spinning', timer = timer },
   }
   timer:start(
     0,
@@ -102,8 +102,13 @@ end
 
 ---@param indicator claude_fill.Indicator
 function M.stop(indicator)
-  indicator.stopped = true
-  indicator.halt_timer()
+  local state = indicator.state
+  if state.kind == 'stopped' then
+    return
+  end
+  indicator.state = { kind = 'stopped' }
+  state.timer:stop()
+  state.timer:close()
   if vim.api.nvim_buf_is_valid(indicator.target.buf) then
     vim.api.nvim_buf_del_extmark(indicator.target.buf, NS, indicator.mark)
   end

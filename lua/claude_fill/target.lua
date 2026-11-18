@@ -40,7 +40,7 @@ end
 function M.span(target)
   local details =
     vim.api.nvim_buf_get_extmark_by_id(target.buf, NS, target.mark, { details = true })
-  return details[1], details[3].end_row
+  return math.min(details[1], details[3].end_row), math.max(details[1], details[3].end_row)
 end
 
 ---@param target claude_fill.Target
@@ -81,7 +81,31 @@ end
 
 ---@param target claude_fill.Target
 function M.clear(target)
-  vim.api.nvim_buf_del_extmark(target.buf, NS, target.mark)
+  if vim.api.nvim_buf_is_valid(target.buf) then
+    vim.api.nvim_buf_del_extmark(target.buf, NS, target.mark)
+  end
+end
+
+---@class claude_fill.TargetContext
+---@field path string
+---@field filetype string
+---@field before string[]
+---@field target string[]
+---@field after string[]
+
+---@param target claude_fill.Target
+---@param project_root string
+---@return claude_fill.TargetContext
+function M.context(target, project_root)
+  local absolute = vim.api.nvim_buf_get_name(target.buf)
+  local before, after = M.surroundings(target)
+  return {
+    path = vim.fs.relpath(project_root, absolute) or absolute,
+    filetype = vim.bo[target.buf].filetype,
+    before = before,
+    target = M.lines(target),
+    after = after,
+  }
 end
 
 return M
