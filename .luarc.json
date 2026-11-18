@@ -1,0 +1,13 @@
+{
+  "$schema": "https://raw.githubusercontent.com/LuaLS/vscode-lua/master/setting/schema.json",
+  "runtime.version": "LuaJIT",
+  "workspace.library": ["${env:VIMRUNTIME}/lua"],
+  "workspace.checkThirdParty": false,
+  "diagnostics.globals": ["vim"],
+  "diagnostics.neededFileStatus": {
+    "missing-fields": "Any",
+    "await-in-sync": "Any",
+    "param-type-mismatch": "Any",
+    "cast-type-mismatch": "Any"
+  }
+}
