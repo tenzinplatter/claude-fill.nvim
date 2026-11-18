@@ -66,7 +66,7 @@ end
 local function persist(project_root, record)
   local ok, err = pcall(store.set, project_root, record)
   if not ok then
-    vim.notify('claude-fill: could not save primer state: ' .. tostring(err), vim.log.levels.WARN)
+    notify.warn('could not save primer state: ' .. tostring(err))
   end
 end
 
@@ -226,7 +226,7 @@ end
 ---@param result claude_fill.PrimerResult
 local function report_build(result)
   if result.kind == 'ready' then
-    vim.notify('claude-fill: primer ready')
+    notify.info('primer ready')
   else
     notify.error(result.message)
   end
@@ -309,13 +309,13 @@ function M.prime(project_root)
   local state = state_of(project_root)
   if state.kind == 'building' or state.kind == 'rebuilding' then
     attach_reporter(state, report_build)
-    return vim.notify('claude-fill: primer is already being built')
+    return notify.info('primer is already being built')
   end
   local head = root.head(project_root)
   if head.kind == 'unreadable' then
     return report_build({ kind = 'failed', message = unreadable_message(head.error) })
   end
-  vim.notify('claude-fill: priming ' .. project_root)
+  notify.info('priming ' .. project_root)
   start_build_for(project_root, state, head.head)
 end
 

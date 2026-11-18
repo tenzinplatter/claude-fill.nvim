@@ -1,6 +1,11 @@
 local M = {}
 
 ---@param message string
+function M.info(message)
+  vim.notify('claude-fill: ' .. message, vim.log.levels.INFO)
+end
+
+---@param message string
 function M.error(message)
   vim.notify('claude-fill: ' .. message, vim.log.levels.ERROR)
 end
