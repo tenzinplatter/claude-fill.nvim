@@ -24,6 +24,7 @@ local target_mod = require('claude_fill.target')
 
 ---@class claude_fill.Declined
 ---@field kind 'declined'
+---@field instruction string
 ---@field reason string
 
 ---@class claude_fill.Discarded
@@ -63,15 +64,25 @@ local function target_of(fill)
 end
 
 ---@param target claude_fill.Target
----@return boolean
-local function overlaps_active(target)
+---@return claude_fill.Target|nil
+local function conflicting_target(target)
   for fill in pairs(states) do
     local active = target_of(fill)
     if target_mod.span(active) and target_mod.overlaps(active, target) then
-      return true
+      return active
     end
   end
-  return false
+  return nil
+end
+
+---@param target claude_fill.Target
+---@param active claude_fill.Target
+---@return string
+local function conflict_message(target, active)
+  if target_mod.adjoins_start(target, active) then
+    return 'target is adjacent to the start of an active fill'
+  end
+  return 'target overlaps an active fill'
 end
 
 ---@param outcome claude_fill.Outcome
@@ -80,9 +91,9 @@ local function status_of(outcome)
   local kind = outcome.kind
   if kind == 'applied' then
     return 'success'
-  elseif kind == 'failed' or kind == 'declined' then
+  elseif kind == 'failed' or kind == 'declined' or kind == 'discarded' then
     return 'failed'
-  elseif kind == 'cancelled' or kind == 'discarded' then
+  elseif kind == 'cancelled' then
     return 'cancel'
   end
   error('unhandled outcome ' .. kind)
@@ -93,7 +104,7 @@ local function report(outcome)
   if outcome.kind == 'failed' then
     notify.error(outcome.message)
   elseif outcome.kind == 'declined' then
-    notify.warn('declined: ' .. outcome.reason)
+    notify.warn(('declined %q: %s'):format(outcome.instruction, outcome.reason))
   elseif outcome.kind == 'discarded' then
     notify.warn(discard.message(outcome.instruction, outcome.saved))
   end
@@ -109,13 +120,14 @@ local function finish(fill, outcome)
 end
 
 ---@param answer claude_fill.Answer|nil
+---@param instruction string
 ---@return claude_fill.Resolution
-local function resolve(answer)
+local function resolve(answer, instruction)
   if not answer then
     return { kind = 'failed', message = 'claude returned an answer in an unexpected shape' }
   end
   if answer.kind == 'declined' then
-    return { kind = 'declined', reason = answer.reason }
+    return { kind = 'declined', instruction = instruction, reason = answer.reason }
   end
   return { kind = 'lines', lines = prompt.replacement_lines(answer.replacement) }
 end
@@ -165,7 +177,7 @@ end
 ---@param fill claude_fill.Fill
 ---@param event claude_fill.Done
 local function apply(fill, event)
-  finish(fill, outcome_of(fill, resolve(prompt.decode_answer(event.answer))))
+  finish(fill, outcome_of(fill, resolve(prompt.decode_answer(event.answer), fill.instruction)))
 end
 
 ---@param event claude_fill.Crashed
@@ -265,6 +277,13 @@ local function on_primer(fill, attempt, result)
   if not target_mod.span(target_of(fill)) then
     return finish(fill, { kind = 'failed', message = 'target no longer exists' })
   end
+  if target_mod.edited_since(fill.snapshot) then
+    return finish(fill, {
+      kind = 'discarded',
+      instruction = fill.instruction,
+      saved = { kind = 'unfilled' },
+    })
+  end
   states[fill] = run_forked(fill, { primer_id = result.session_id, attempt = attempt })
 end
 
@@ -348,8 +367,9 @@ function M.start(target, instruction)
   if not project_root then
     return reject(target, 'buffer is not a file inside a git repository')
   end
-  if overlaps_active(target) then
-    return reject(target, 'target overlaps an active fill')
+  local active = conflicting_target(target)
+  if active then
+    return reject(target, conflict_message(target, active))
   end
   launch(target, project_root, instruction)
 end

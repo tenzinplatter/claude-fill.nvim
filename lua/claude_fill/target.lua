@@ -95,14 +95,42 @@ function M.overlaps(a, b)
   return a_first < b_end and b_first < a_end
 end
 
+---@class claude_fill.Margin
+---@field above string|nil
+---@field below string|nil
+
 ---@class claude_fill.TargetSnapshot
----@field target claude_fill.Target
----@field lines string[]
+---@field package target claude_fill.Target
+---@field package lines string[]
+---@field package margin claude_fill.Margin|nil
+
+---@param buf integer
+---@param first integer
+---@param stop integer
+---@return claude_fill.Margin
+local function margin_of(buf, first, stop)
+  return {
+    above = first > 0 and vim.api.nvim_buf_get_lines(buf, first - 1, first, false)[1] or nil,
+    below = vim.api.nvim_buf_get_lines(buf, stop, stop + 1, false)[1],
+  }
+end
+
+---@param was claude_fill.Margin
+---@param now claude_fill.Margin
+---@return boolean
+local function margin_intact(was, now)
+  return was.above == now.above or was.below == now.below
+end
 
 ---@param target claude_fill.Target
 ---@return claude_fill.TargetSnapshot
 function M.snapshot(target)
-  return { target = target, lines = M.lines(target) }
+  local first, stop = must_span(target)
+  return {
+    target = target,
+    lines = M.lines(target),
+    margin = first == stop and margin_of(target.buf, first, stop) or nil,
+  }
 end
 
 ---@param snapshot claude_fill.TargetSnapshot
@@ -118,8 +146,23 @@ function M.edited_since(snapshot)
   if not (first and stop) then
     return true
   end
-  local lines = vim.api.nvim_buf_get_lines(snapshot.target.buf, first, stop, false)
-  return not vim.deep_equal(lines, snapshot.lines)
+  local buf = snapshot.target.buf
+  if snapshot.margin and not margin_intact(snapshot.margin, margin_of(buf, first, stop)) then
+    return true
+  end
+  return not vim.deep_equal(vim.api.nvim_buf_get_lines(buf, first, stop, false), snapshot.lines)
+end
+
+---@param a claude_fill.Target
+---@param b claude_fill.Target
+---@return boolean
+function M.adjoins_start(a, b)
+  if a.buf ~= b.buf then
+    return false
+  end
+  local a_first, a_stop = must_span(a)
+  local b_first, b_stop = must_span(b)
+  return (a_first == a_stop) ~= (b_first == b_stop) and a_first == b_first
 end
 
 ---@param target claude_fill.Target

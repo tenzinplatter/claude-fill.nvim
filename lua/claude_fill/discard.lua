@@ -3,6 +3,7 @@ local config = require('claude_fill.config')
 ---@alias claude_fill.Saved
 ---| { kind: 'register', register: claude_fill.Register, replacing: string|nil }
 ---| { kind: 'empty' }
+---| { kind: 'unfilled' }
 
 ---@class claude_fill.Deposit
 ---@field instruction string
@@ -17,7 +18,11 @@ local deposits = {}
 ---@return string|nil
 local function replaced_instruction(register)
   local deposit = deposits[register]
-  if deposit and vim.deep_equal(vim.fn.getreg(register, 1, true), deposit.lines) then
+  if
+    deposit
+    and vim.fn.getregtype(register) == 'V'
+    and vim.deep_equal(vim.fn.getreg(register, 1, true), deposit.lines)
+  then
     return deposit.instruction
   end
   return nil
@@ -42,6 +47,9 @@ end
 ---@return string
 function M.message(instruction, saved)
   local head = ('target changed or was removed; replacement for %q not applied'):format(instruction)
+  if saved.kind == 'unfilled' then
+    return ('target changed before the fill ran; %q not run'):format(instruction)
+  end
   if saved.kind == 'empty' then
     return head .. ' (nothing to save)'
   end

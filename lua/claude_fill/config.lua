@@ -1,4 +1,4 @@
----@alias claude_fill.Register '"'|'+'|'*'|'-'|'a'|'b'|'c'|'d'|'e'|'f'|'g'|'h'|'i'|'j'|'k'|'l'|'m'|'n'|'o'|'p'|'q'|'r'|'s'|'t'|'u'|'v'|'w'|'x'|'y'|'z'|'A'|'B'|'C'|'D'|'E'|'F'|'G'|'H'|'I'|'J'|'K'|'L'|'M'|'N'|'O'|'P'|'Q'|'R'|'S'|'T'|'U'|'V'|'W'|'X'|'Y'|'Z'
+---@alias claude_fill.Register '"'|'+'|'*'|'-'|'a'|'b'|'c'|'d'|'e'|'f'|'g'|'h'|'i'|'j'|'k'|'l'|'m'|'n'|'o'|'p'|'q'|'r'|'s'|'t'|'u'|'v'|'w'|'x'|'y'|'z'
 
 ---@class claude_fill.Config
 ---@field model string
@@ -39,10 +39,19 @@ local DEFAULTS = {
 local current = vim.deepcopy(DEFAULTS)
 
 ---@param register any
+---@return boolean
+local function is_register(register)
+  if type(register) ~= 'string' or not register:match('^[%l"+*-]$') then
+    return false
+  end
+  return vim.fn.has('clipboard') == 1 or not register:match('^[+*]$')
+end
+
+---@param register any
 local function validate_register(register)
-  if type(register) ~= 'string' or not register:match('^[%a"+*-]$') then
+  if not is_register(register) then
     error(
-      ('claude-fill: discard_register must name a writable register, got %s'):format(
+      ('claude-fill: discard_register must be one of a-z, ", -, or (with a clipboard provider) + or *; got %s'):format(
         vim.inspect(register)
       )
     )
