@@ -95,6 +95,20 @@ function M.overlaps(a, b)
 end
 
 ---@param target claude_fill.Target
+---@param row integer 0-based
+---@return boolean
+function M.touches_row(target, row)
+  local first, stop = M.span(target)
+  if not first or not stop then
+    return false
+  end
+  if first == stop then
+    return row == first - 1 or row == first
+  end
+  return row >= first and row < stop
+end
+
+---@param target claude_fill.Target
 function M.clear(target)
   if vim.api.nvim_buf_is_valid(target.buf) then
     vim.api.nvim_buf_del_extmark(target.buf, NS, target.mark)
