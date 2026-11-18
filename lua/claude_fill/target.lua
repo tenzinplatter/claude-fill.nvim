@@ -95,42 +95,124 @@ function M.overlaps(a, b)
   return a_first < b_end and b_first < a_end
 end
 
----@class claude_fill.Margin
----@field above string|nil
----@field below string|nil
+---@class claude_fill.Position
+---@field row integer
+---@field col integer
 
----@class claude_fill.TargetSnapshot
+---@alias claude_fill.WatchStatus 'tracking'|'displaced'|'released'
+
+---@class claude_fill.InsertionWatch
+---@field package status claude_fill.WatchStatus
+
+---@class claude_fill.RangeSnapshot
+---@field package kind 'range'
 ---@field package target claude_fill.Target
 ---@field package lines string[]
----@field package margin claude_fill.Margin|nil
 
----@param buf integer
----@param first integer
----@param stop integer
----@return claude_fill.Margin
-local function margin_of(buf, first, stop)
-  return {
-    above = first > 0 and vim.api.nvim_buf_get_lines(buf, first - 1, first, false)[1] or nil,
-    below = vim.api.nvim_buf_get_lines(buf, stop, stop + 1, false)[1],
-  }
+---@class claude_fill.InsertionSnapshot
+---@field package kind 'insertion'
+---@field package target claude_fill.Target
+---@field package watch claude_fill.InsertionWatch
+
+---@alias claude_fill.TargetSnapshot claude_fill.RangeSnapshot|claude_fill.InsertionSnapshot
+
+---@param a claude_fill.Position
+---@param b claude_fill.Position
+---@return boolean
+local function precedes(a, b)
+  return a.row < b.row or (a.row == b.row and a.col < b.col)
 end
 
----@param was claude_fill.Margin
----@param now claude_fill.Margin
+---@param start_row integer
+---@param start_col integer
+---@param old_end_row integer
+---@param old_end_col integer
+---@return claude_fill.Position first
+---@return claude_fill.Position stop
+local function removed_span(start_row, start_col, old_end_row, old_end_col)
+  local stop_col = old_end_row == 0 and start_col + old_end_col or old_end_col
+  return { row = start_row, col = start_col }, { row = start_row + old_end_row, col = stop_col }
+end
+
+---@param first claude_fill.Position
+---@param stop claude_fill.Position
+---@param point claude_fill.Position
 ---@return boolean
-local function margin_intact(was, now)
-  return was.above == now.above or was.below == now.below
+local function encloses(first, stop, point)
+  return precedes(first, point) and precedes(point, stop)
+end
+
+---@param first claude_fill.Position
+---@param stop claude_fill.Position
+---@param point claude_fill.Position
+---@return boolean
+local function joins_across(first, stop, point)
+  return vim.deep_equal(stop, point) and first.row < point.row and first.col > 0
+end
+
+---@param first claude_fill.Position
+---@param stop claude_fill.Position
+---@param point claude_fill.Position
+---@return boolean
+local function displaces(first, stop, point)
+  return encloses(first, stop, point) or joins_across(first, stop, point)
+end
+
+---@param target claude_fill.Target
+---@return claude_fill.Position|nil
+local function insertion_point(target)
+  local first = M.span(target)
+  return first and { row = first, col = 0 }
+end
+
+---@param watch claude_fill.InsertionWatch
+local function displace(watch)
+  if watch.status == 'tracking' then
+    watch.status = 'displaced'
+  end
+end
+
+---@param target claude_fill.Target
+---@param watch claude_fill.InsertionWatch
+---@param first claude_fill.Position
+---@param stop claude_fill.Position
+local function observe_removal(target, watch, first, stop)
+  local point = insertion_point(target)
+  if not point or displaces(first, stop, point) then
+    displace(watch)
+  end
+end
+
+---@param target claude_fill.Target
+---@return claude_fill.InsertionWatch
+local function watch_insertion(target)
+  ---@type claude_fill.InsertionWatch
+  local watch = { status = 'tracking' }
+  vim.api.nvim_buf_attach(target.buf, false, {
+    on_bytes = function(_, _, _, start_row, start_col, _, old_end_row, old_end_col)
+      if watch.status == 'tracking' then
+        observe_removal(target, watch, removed_span(start_row, start_col, old_end_row, old_end_col))
+      end
+      return watch.status ~= 'tracking'
+    end,
+    on_reload = function()
+      displace(watch)
+    end,
+    on_detach = function()
+      displace(watch)
+    end,
+  })
+  return watch
 end
 
 ---@param target claude_fill.Target
 ---@return claude_fill.TargetSnapshot
 function M.snapshot(target)
   local first, stop = must_span(target)
-  return {
-    target = target,
-    lines = M.lines(target),
-    margin = first == stop and margin_of(target.buf, first, stop) or nil,
-  }
+  if first == stop then
+    return { kind = 'insertion', target = target, watch = watch_insertion(target) }
+  end
+  return { kind = 'range', target = target, lines = M.lines(target) }
 end
 
 ---@param snapshot claude_fill.TargetSnapshot
@@ -140,17 +222,38 @@ function M.of(snapshot)
 end
 
 ---@param snapshot claude_fill.TargetSnapshot
+---@return string[]
+local function snapshot_lines(snapshot)
+  if snapshot.kind == 'range' then
+    return snapshot.lines
+  end
+  return {}
+end
+
+---@param snapshot claude_fill.RangeSnapshot
+---@return boolean
+local function range_edited(snapshot)
+  return not vim.deep_equal(M.lines(snapshot.target), snapshot.lines)
+end
+
+---@param snapshot claude_fill.TargetSnapshot
 ---@return boolean
 function M.edited_since(snapshot)
-  local first, stop = M.span(snapshot.target)
-  if not (first and stop) then
+  if not M.span(snapshot.target) then
     return true
   end
-  local buf = snapshot.target.buf
-  if snapshot.margin and not margin_intact(snapshot.margin, margin_of(buf, first, stop)) then
-    return true
+  if snapshot.kind == 'insertion' then
+    return snapshot.watch.status ~= 'tracking'
   end
-  return not vim.deep_equal(vim.api.nvim_buf_get_lines(buf, first, stop, false), snapshot.lines)
+  return range_edited(snapshot)
+end
+
+---@param snapshot claude_fill.TargetSnapshot
+function M.release(snapshot)
+  if snapshot.kind == 'insertion' then
+    snapshot.watch.status = 'released'
+  end
+  M.clear(snapshot.target)
 end
 
 ---@param a claude_fill.Target
@@ -209,7 +312,7 @@ function M.context(snapshot, project_root)
     path = vim.fs.relpath(project_root, absolute) or absolute,
     filetype = vim.bo[target.buf].filetype,
     before = before,
-    target = snapshot.lines,
+    target = snapshot_lines(snapshot),
     after = after,
   }
 end
