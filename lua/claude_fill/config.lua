@@ -2,11 +2,13 @@
 ---@field model string
 ---@field tools string[]
 ---@field allowed_tools string[]
+---@field primer_prompt? string
 
 ---@class claude_fill.UserConfig
 ---@field model? string
 ---@field tools? string[]
 ---@field allowed_tools? string[]
+---@field primer_prompt? string
 
 local M = {}
 

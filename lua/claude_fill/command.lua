@@ -1,3 +1,5 @@
+local primer = require('claude_fill.primer')
+local root = require('claude_fill.root')
 local target_mod = require('claude_fill.target')
 
 local M = {}
@@ -21,8 +23,28 @@ local function start_with(target, instruction)
   require('claude_fill.fill').start(target, instruction)
 end
 
+---@param message string
+local function notify_error(message)
+  vim.notify('claude-fill: ' .. message, vim.log.levels.ERROR)
+end
+
+---@param opts vim.api.keyset.create_user_command.command_args
+local function prime(opts)
+  if opts.range ~= 0 then
+    return notify_error('prime does not take a range')
+  end
+  local project_root = root.of_buffer(vim.api.nvim_get_current_buf())
+  if not project_root then
+    return notify_error('buffer is not a file inside a git repository')
+  end
+  primer.prime(project_root)
+end
+
 ---@param opts vim.api.keyset.create_user_command.command_args
 local function run(opts)
+  if opts.args == 'prime' then
+    return prime(opts)
+  end
   local target = target_of(opts)
   if opts.args ~= '' then
     return start_with(target, opts.args)
