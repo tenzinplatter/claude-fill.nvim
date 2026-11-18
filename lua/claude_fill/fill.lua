@@ -274,9 +274,6 @@ local function on_primer(fill, attempt, result)
   if result.kind == 'failed' then
     return finish(fill, { kind = 'failed', message = result.message })
   end
-  if not target_mod.span(target_of(fill)) then
-    return finish(fill, { kind = 'failed', message = 'target no longer exists' })
-  end
   if target_mod.edited_since(fill.snapshot) then
     return finish(fill, {
       kind = 'discarded',
@@ -354,9 +351,11 @@ end
 ---@return boolean cancelled
 function M.cancel_at(buf, row)
   return cancel_first(function(fill)
-    return target_of(fill).buf == buf and target_mod.contains_row(target_of(fill), row)
+    local target = target_of(fill)
+    return target.buf == buf and target_mod.contains_row(target, row)
   end) or cancel_first(function(fill)
-    return target_of(fill).buf == buf and target_mod.is_insertion_above(target_of(fill), row)
+    local target = target_of(fill)
+    return target.buf == buf and target_mod.is_insertion_above(target, row)
   end)
 end
 
