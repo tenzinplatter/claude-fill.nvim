@@ -45,8 +45,7 @@ function M.message(instruction, saved)
   if saved.kind == 'empty' then
     return head .. ' (nothing to save)'
   end
-  local tail = saved.replacing
-      and (', replacing the replacement for %q'):format(saved.replacing)
+  local tail = saved.replacing and (', replacing the replacement for %q'):format(saved.replacing)
     or ''
   return ('%s; saved to register %s%s'):format(head, saved.register, tail)
 end

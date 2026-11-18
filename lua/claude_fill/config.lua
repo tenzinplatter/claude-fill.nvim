@@ -41,7 +41,11 @@ local current = vim.deepcopy(DEFAULTS)
 ---@param register any
 local function validate_register(register)
   if type(register) ~= 'string' or not register:match('^[%a"+*-]$') then
-    error(('claude-fill: discard_register must name a writable register, got %s'):format(vim.inspect(register)))
+    error(
+      ('claude-fill: discard_register must name a writable register, got %s'):format(
+        vim.inspect(register)
+      )
+    )
   end
 end
 
