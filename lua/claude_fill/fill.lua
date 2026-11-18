@@ -1,5 +1,6 @@
 local cli = require('claude_fill.cli')
 local config = require('claude_fill.config')
+local discard = require('claude_fill.discard')
 local indicator_mod = require('claude_fill.indicator')
 local notify = require('claude_fill.notify')
 local primer = require('claude_fill.primer')
@@ -21,16 +22,26 @@ local target_mod = require('claude_fill.target')
 ---@class claude_fill.Cancelled
 ---@field kind 'cancelled'
 
----@alias claude_fill.Outcome claude_fill.Applied|claude_fill.Failed|claude_fill.Cancelled
+---@class claude_fill.Declined
+---@field kind 'declined'
+---@field instruction string
+---@field reason string
+
+---@class claude_fill.Discarded
+---@field kind 'discarded'
+---@field instruction string
+---@field replacement claude_fill.DiscardedReplacement
+
+---@alias claude_fill.Outcome claude_fill.Applied|claude_fill.Failed|claude_fill.Cancelled|claude_fill.Declined|claude_fill.Discarded
 ---@alias claude_fill.Attempt 'first'|'retry'
----@alias claude_fill.Resolution claude_fill.Lines|claude_fill.Failed
+---@alias claude_fill.Resolution claude_fill.Lines|claude_fill.Failed|claude_fill.Declined
 
 ---@alias claude_fill.FillState
 ---| { kind: 'awaiting_primer', handle: claude_fill.PrimerHandle }
 ---| { kind: 'running', run: claude_fill.Run }
 
 ---@class claude_fill.Fill
----@field target claude_fill.Target
+---@field snapshot claude_fill.TargetSnapshot
 ---@field project_root string
 ---@field instruction string
 ---@field indicator claude_fill.Indicator
@@ -46,32 +57,56 @@ local await_primer
 ---@type table<claude_fill.Fill, claude_fill.FillState>
 local states = {}
 
+---@param fill claude_fill.Fill
+---@return claude_fill.Target
+local function target_of(fill)
+  return target_mod.of(fill.snapshot)
+end
+
 ---@param target claude_fill.Target
----@return boolean
-local function overlaps_active(target)
+---@return claude_fill.Target|nil
+local function conflicting_target(target)
   for fill in pairs(states) do
-    if target_mod.span(fill.target) and target_mod.overlaps(fill.target, target) then
-      return true
+    local active = target_of(fill)
+    if target_mod.span(active) and target_mod.overlaps(active, target) then
+      return active
     end
   end
-  return false
+  return nil
+end
+
+---@param target claude_fill.Target
+---@param active claude_fill.Target
+---@return string
+local function conflict_message(target, active)
+  if target_mod.adjoins_start(target, active) then
+    return 'target is adjacent to the start of an active fill'
+  end
+  return 'target overlaps an active fill'
 end
 
 ---@param outcome claude_fill.Outcome
 ---@return claude_fill.ProgressStatus
 local function status_of(outcome)
-  if outcome.kind == 'applied' then
+  local kind = outcome.kind
+  if kind == 'applied' then
     return 'success'
-  elseif outcome.kind == 'failed' then
+  elseif kind == 'failed' or kind == 'declined' or kind == 'discarded' then
     return 'failed'
+  elseif kind == 'cancelled' then
+    return 'cancel'
   end
-  return 'cancel'
+  error('unhandled outcome ' .. kind)
 end
 
 ---@param outcome claude_fill.Outcome
-local function report_failure(outcome)
+local function report(outcome)
   if outcome.kind == 'failed' then
     notify.error(outcome.message)
+  elseif outcome.kind == 'declined' then
+    notify.warn(('declined %q: %s'):format(outcome.instruction, outcome.reason))
+  elseif outcome.kind == 'discarded' then
+    notify.warn(discard.message(outcome.instruction, outcome.replacement))
   end
 end
 
@@ -79,19 +114,20 @@ end
 ---@param outcome claude_fill.Outcome
 local function finish(fill, outcome)
   states[fill] = nil
-  target_mod.clear(fill.target)
-  report_failure(outcome)
+  target_mod.release(fill.snapshot)
+  report(outcome)
   indicator_mod.stop(fill.indicator, status_of(outcome))
 end
 
 ---@param answer claude_fill.Answer|nil
+---@param instruction string
 ---@return claude_fill.Resolution
-local function resolve(answer)
+local function resolve(answer, instruction)
   if not answer then
     return { kind = 'failed', message = 'claude returned an answer in an unexpected shape' }
   end
   if answer.kind == 'declined' then
-    return { kind = 'failed', message = 'Declined: ' .. answer.reason }
+    return { kind = 'declined', instruction = instruction, reason = answer.reason }
   end
   return { kind = 'lines', lines = prompt.replacement_lines(answer.replacement) }
 end
@@ -100,7 +136,7 @@ end
 ---@param lines string[]
 ---@return claude_fill.Outcome
 local function write(fill, lines)
-  local ok, err = pcall(target_mod.replace, fill.target, lines)
+  local ok, err = pcall(target_mod.replace, target_of(fill), lines)
   if ok then
     return { kind = 'applied' }
   end
@@ -108,14 +144,40 @@ local function write(fill, lines)
 end
 
 ---@param fill claude_fill.Fill
+---@param lines string[]
+---@return claude_fill.Outcome
+local function discard_lines(fill, lines)
+  local ok, replacement = pcall(discard.save, fill.instruction, lines)
+  if not ok then
+    return { kind = 'failed', message = 'could not save replacement: ' .. tostring(replacement) }
+  end
+  return { kind = 'discarded', instruction = fill.instruction, replacement = replacement }
+end
+
+---@param fill claude_fill.Fill
+---@param lines string[]
+---@return claude_fill.Outcome
+local function apply_lines(fill, lines)
+  if target_mod.edited_since(fill.snapshot) then
+    return discard_lines(fill, lines)
+  end
+  return write(fill, lines)
+end
+
+---@param fill claude_fill.Fill
+---@param resolution claude_fill.Resolution
+---@return claude_fill.Outcome
+local function outcome_of(fill, resolution)
+  if resolution.kind == 'lines' then
+    return apply_lines(fill, resolution.lines)
+  end
+  return resolution
+end
+
+---@param fill claude_fill.Fill
 ---@param event claude_fill.Done
 local function apply(fill, event)
-  local resolution = resolve(prompt.decode_answer(event.answer))
-  if resolution.kind == 'lines' then
-    finish(fill, write(fill, resolution.lines))
-  elseif resolution.kind == 'failed' then
-    finish(fill, resolution)
-  end
+  finish(fill, outcome_of(fill, resolve(prompt.decode_answer(event.answer), fill.instruction)))
 end
 
 ---@param event claude_fill.Crashed
@@ -157,13 +219,13 @@ local function handle_event(fill, event, context)
   end
 end
 
----@param target claude_fill.Target
+---@param snapshot claude_fill.TargetSnapshot
 ---@param project_root string
 ---@param instruction string
 ---@param primer_id string
 ---@return claude_fill.RunSpec
-local function run_spec(target, project_root, instruction, primer_id)
-  local context = target_mod.context(target, project_root)
+local function run_spec(snapshot, project_root, instruction, primer_id)
+  local context = target_mod.context(snapshot, project_root)
   local cfg = config.get()
   return {
     prompt = prompt.fill({
@@ -195,7 +257,7 @@ end
 ---@param context claude_fill.RunContext
 ---@return claude_fill.FillState
 local function run_forked(fill, context)
-  local spec = run_spec(fill.target, fill.project_root, fill.instruction, context.primer_id)
+  local spec = run_spec(fill.snapshot, fill.project_root, fill.instruction, context.primer_id)
   local run = cli.run(spec, function(event)
     handle_event(fill, event, context)
   end)
@@ -212,8 +274,12 @@ local function on_primer(fill, attempt, result)
   if result.kind == 'failed' then
     return finish(fill, { kind = 'failed', message = result.message })
   end
-  if not target_mod.span(fill.target) then
-    return finish(fill, { kind = 'failed', message = 'target no longer exists' })
+  if target_mod.edited_since(fill.snapshot) then
+    return finish(fill, {
+      kind = 'discarded',
+      instruction = fill.instruction,
+      replacement = { kind = 'none' },
+    })
   end
   states[fill] = run_forked(fill, { primer_id = result.session_id, attempt = attempt })
 end
@@ -234,7 +300,7 @@ end
 local function launch(target, project_root, instruction)
   ---@type claude_fill.Fill
   local fill = {
-    target = target,
+    snapshot = target_mod.snapshot(target),
     project_root = project_root,
     instruction = instruction,
     indicator = indicator_mod.start(target, instruction),
@@ -285,9 +351,11 @@ end
 ---@return boolean cancelled
 function M.cancel_at(buf, row)
   return cancel_first(function(fill)
-    return fill.target.buf == buf and target_mod.contains_row(fill.target, row)
+    local target = target_of(fill)
+    return target.buf == buf and target_mod.contains_row(target, row)
   end) or cancel_first(function(fill)
-    return fill.target.buf == buf and target_mod.is_insertion_above(fill.target, row)
+    local target = target_of(fill)
+    return target.buf == buf and target_mod.is_insertion_above(target, row)
   end)
 end
 
@@ -298,8 +366,9 @@ function M.start(target, instruction)
   if not project_root then
     return reject(target, 'buffer is not a file inside a git repository')
   end
-  if overlaps_active(target) then
-    return reject(target, 'target overlaps an active fill')
+  local active = conflicting_target(target)
+  if active then
+    return reject(target, conflict_message(target, active))
   end
   launch(target, project_root, instruction)
 end
