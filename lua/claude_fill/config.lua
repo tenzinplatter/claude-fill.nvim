@@ -38,10 +38,16 @@ local DEFAULTS = {
 ---@type claude_fill.Config
 local current = vim.deepcopy(DEFAULTS)
 
+---@type table<claude_fill.Register, true>
+local REGISTERS = {}
+for register in ('"+*-abcdefghijklmnopqrstuvwxyz'):gmatch('.') do
+  REGISTERS[register] = true
+end
+
 ---@param register any
 ---@return boolean
 local function is_register(register)
-  return type(register) == 'string' and register:match('^[%l"+*-]$') ~= nil
+  return REGISTERS[register] == true
 end
 
 ---@param register any
