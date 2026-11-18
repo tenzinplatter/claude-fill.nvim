@@ -41,9 +41,30 @@ local function prime(opts)
 end
 
 ---@param opts vim.api.keyset.create_user_command.command_args
+local function cancel(opts)
+  if opts.range ~= 0 then
+    return notify_error('cancel does not take a range')
+  end
+  local row = vim.api.nvim_win_get_cursor(0)[1] - 1
+  if not require('claude_fill.fill').cancel_at(vim.api.nvim_get_current_buf(), row) then
+    notify_error('no active fill at the cursor')
+  end
+end
+
+---@param ev { data: vim.event.progress.data }
+local function on_progress(ev)
+  if ev.data.status == 'cancel' then
+    require('claude_fill.fill').cancel_by_progress(ev.data.id)
+  end
+end
+
+---@param opts vim.api.keyset.create_user_command.command_args
 local function run(opts)
   if opts.args == 'prime' then
     return prime(opts)
+  end
+  if opts.args == 'cancel' then
+    return cancel(opts)
   end
   local target = target_of(opts)
   if opts.args ~= '' then
@@ -55,6 +76,10 @@ local function run(opts)
 end
 
 function M.register()
+  vim.api.nvim_create_autocmd('Progress', {
+    pattern = require('claude_fill.indicator').PROGRESS_SOURCE,
+    callback = on_progress,
+  })
   vim.api.nvim_create_user_command('ClaudeFill', run, { nargs = '*', range = true })
   vim.keymap.set('n', '<Plug>(ClaudeFill)', '<Cmd>ClaudeFill<CR>')
   vim.keymap.set('x', '<Plug>(ClaudeFill)', ':ClaudeFill<CR>')

@@ -195,6 +195,7 @@ local function spawn(spec, on_chunk, on_exit)
     cwd = spec.cwd,
     stdin = spec.prompt,
     text = true,
+    detach = true,
     stdout = function(_, chunk)
       on_chunk(chunk)
     end,
@@ -231,7 +232,7 @@ function M.run(spec, on_event)
   end
   return {
     cancel = function()
-      process:kill('sigterm')
+      vim.uv.kill(-process.pid, 'sigterm')
     end,
   }
 end
