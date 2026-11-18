@@ -14,7 +14,10 @@
 
 ---@alias claude_fill.Event claude_fill.Step|claude_fill.Done|claude_fill.Crashed
 
----@alias claude_fill.Session { kind: 'ephemeral' }
+---@alias claude_fill.Session
+---| { kind: 'ephemeral' }
+---| { kind: 'primer', id: string }
+---| { kind: 'fork', primer_id: string }
 
 ---@class claude_fill.RunSpec
 ---@field session claude_fill.Session
@@ -58,6 +61,12 @@ end
 local function session_flags(session)
   if session.kind == 'ephemeral' then
     return { '--no-session-persistence' }
+  end
+  if session.kind == 'primer' then
+    return { '--session-id', session.id }
+  end
+  if session.kind == 'fork' then
+    return { '--resume', session.primer_id, '--fork-session', '--no-session-persistence' }
   end
   error('unhandled session kind: ' .. tostring(session.kind))
 end
@@ -179,6 +188,15 @@ local function spawn(spec, on_chunk, on_exit)
     return nil, tostring(process)
   end
   return process
+end
+
+---@param event claude_fill.Crashed
+---@return string
+function M.crash_message(event)
+  if event.stderr == '' then
+    return event.message
+  end
+  return event.message .. '\n' .. event.stderr
 end
 
 ---@param spec claude_fill.RunSpec

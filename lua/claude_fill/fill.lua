@@ -1,6 +1,7 @@
 local cli = require('claude_fill.cli')
 local config = require('claude_fill.config')
 local indicator_mod = require('claude_fill.indicator')
+local primer = require('claude_fill.primer')
 local prompt = require('claude_fill.prompt')
 local root = require('claude_fill.root')
 local target_mod = require('claude_fill.target')
@@ -22,7 +23,7 @@ local target_mod = require('claude_fill.target')
 ---@class claude_fill.Fill
 ---@field target claude_fill.Target
 ---@field indicator claude_fill.Indicator
----@field state { kind: 'running', run: claude_fill.Run }|{ kind: 'finished', outcome: claude_fill.Outcome }
+---@field state { kind: 'awaiting_primer' }|{ kind: 'running', run: claude_fill.Run }|{ kind: 'finished', outcome: claude_fill.Outcome }
 
 local M = {}
 
@@ -102,11 +103,7 @@ end
 ---@param event claude_fill.Crashed
 ---@return claude_fill.Outcome
 local function crash_outcome(event)
-  local message = event.message
-  if event.stderr ~= '' then
-    message = message .. '\n' .. event.stderr
-  end
-  return { kind = 'failed', message = message }
+  return { kind = 'failed', message = cli.crash_message(event) }
 end
 
 ---@param fill claude_fill.Fill
@@ -127,8 +124,9 @@ end
 ---@param target claude_fill.Target
 ---@param project_root string
 ---@param instruction string
+---@param primer_id string
 ---@return claude_fill.RunSpec
-local function run_spec(target, project_root, instruction)
+local function run_spec(target, project_root, instruction, primer_id)
   local context = target_mod.context(target, project_root)
   local cfg = config.get()
   return {
@@ -140,7 +138,7 @@ local function run_spec(target, project_root, instruction)
       after = context.after,
       instruction = instruction,
     }),
-    session = { kind = 'ephemeral' },
+    session = { kind = 'fork', primer_id = primer_id },
     schema = prompt.answer_schema(),
     model = cfg.model,
     tools = cfg.tools,
@@ -156,19 +154,46 @@ local function reject(target, message)
   vim.notify('claude-fill: ' .. message, vim.log.levels.ERROR)
 end
 
+---@param fill claude_fill.Fill
+---@param project_root string
+---@param instruction string
+---@param primer_id string
+local function run_forked(fill, project_root, instruction, primer_id)
+  local spec = run_spec(fill.target, project_root, instruction, primer_id)
+  local run = cli.run(spec, function(event)
+    handle_event(fill, event)
+  end)
+  fill.state = { kind = 'running', run = run }
+end
+
+---@param fill claude_fill.Fill
+---@param project_root string
+---@param instruction string
+---@param result claude_fill.PrimerResult
+local function on_primer(fill, project_root, instruction, result)
+  if fill.state.kind == 'finished' then
+    return
+  end
+  if result.kind == 'failed' then
+    return finish(fill, { kind = 'failed', message = result.message })
+  end
+  run_forked(fill, project_root, instruction, result.session_id)
+end
+
 ---@param target claude_fill.Target
 ---@param project_root string
 ---@param instruction string
 local function launch(target, project_root, instruction)
-  local spec = run_spec(target, project_root, instruction)
-  local indicator = indicator_mod.start(target)
   ---@type claude_fill.Fill
-  local fill
-  local run = cli.run(spec, function(event)
-    handle_event(fill, event)
-  end)
-  fill = { target = target, indicator = indicator, state = { kind = 'running', run = run } }
+  local fill = {
+    target = target,
+    indicator = indicator_mod.start(target),
+    state = { kind = 'awaiting_primer' },
+  }
   table.insert(running, fill)
+  primer.acquire(project_root, function(result)
+    on_primer(fill, project_root, instruction, result)
+  end)
 end
 
 ---@param target claude_fill.Target

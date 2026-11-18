@@ -24,6 +24,20 @@ local RULES = table.concat({
   'instead of a replacement.',
 }, ' ')
 
+local PRIMER = table.concat({
+  'Explore this project so that later requests to write code in it can be answered quickly.',
+  'Read the top-level layout, the build and test configuration, the main modules,',
+  'and any contributor docs such as CLAUDE.md or README files, and note the conventions in use.',
+  'You will not be asked to write code now; when finished, answer with kind "declined"',
+  'and the reason "primed".',
+}, ' ')
+
+---@param override string|nil
+---@return string
+function M.primer(override)
+  return override or PRIMER
+end
+
 ---@param spec claude_fill.FillPrompt
 ---@return string
 function M.fill(spec)
