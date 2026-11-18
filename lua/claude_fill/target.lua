@@ -97,15 +97,20 @@ end
 ---@param target claude_fill.Target
 ---@param row integer 0-based
 ---@return boolean
-function M.touches_row(target, row)
+function M.contains_row(target, row)
   local first, stop = M.span(target)
   if not first or not stop then
     return false
   end
-  if first == stop then
-    return row == first - 1 or row == first
-  end
-  return row >= first and row < stop
+  return row >= first and row < math.max(stop, first + 1)
+end
+
+---@param target claude_fill.Target
+---@param row integer 0-based
+---@return boolean
+function M.is_insertion_above(target, row)
+  local first, stop = M.span(target)
+  return first ~= nil and first == stop and row == first - 1
 end
 
 ---@param target claude_fill.Target

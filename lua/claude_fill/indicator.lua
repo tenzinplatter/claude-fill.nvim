@@ -136,12 +136,12 @@ function M.stop(indicator, status)
     return
   end
   indicator.state = { kind = 'stopped' }
-  echo_progress(indicator.title, status, status, indicator.progress_id)
   state.timer:stop()
   state.timer:close()
   if vim.api.nvim_buf_is_valid(indicator.target.buf) then
     vim.api.nvim_buf_del_extmark(indicator.target.buf, NS, indicator.mark)
   end
+  echo_progress(indicator.title, status, status, indicator.progress_id)
 end
 
 return M

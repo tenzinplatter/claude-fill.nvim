@@ -77,7 +77,7 @@ end
 
 function M.register()
   vim.api.nvim_create_autocmd('Progress', {
-    pattern = 'claude-fill',
+    pattern = require('claude_fill.indicator').PROGRESS_SOURCE,
     callback = on_progress,
   })
   vim.api.nvim_create_user_command('ClaudeFill', run, { nargs = '*', range = true })

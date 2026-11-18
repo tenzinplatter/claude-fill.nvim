@@ -27,37 +27,28 @@ local target_mod = require('claude_fill.target')
 ---@alias claude_fill.FillState
 ---| { kind: 'awaiting_primer', handle: claude_fill.PrimerHandle }
 ---| { kind: 'running', run: claude_fill.Run }
----| { kind: 'finished', outcome: claude_fill.Outcome }
 
 ---@class claude_fill.Fill
 ---@field target claude_fill.Target
 ---@field project_root string
 ---@field instruction string
 ---@field indicator claude_fill.Indicator
----@field state claude_fill.FillState
 
 ---@class claude_fill.RunContext
 ---@field primer_id string
 ---@field attempt claude_fill.Attempt
 
----@type table<string, claude_fill.ProgressStatus>
-local STATUS_OF_OUTCOME = {
-  applied = 'success',
-  failed = 'failed',
-  cancelled = 'cancel',
-}
-
 local M = {}
 
 local await_primer
 
----@type claude_fill.Fill[]
-local active = {}
+---@type table<claude_fill.Fill, claude_fill.FillState>
+local states = {}
 
 ---@param target claude_fill.Target
 ---@return boolean
 local function overlaps_active(target)
-  for _, fill in ipairs(active) do
+  for fill in pairs(states) do
     if target_mod.span(fill.target) and target_mod.overlaps(fill.target, target) then
       return true
     end
@@ -65,13 +56,15 @@ local function overlaps_active(target)
   return false
 end
 
----@param fill claude_fill.Fill
 ---@param outcome claude_fill.Outcome
-local function leave_active(fill, outcome)
-  fill.state = { kind = 'finished', outcome = outcome }
-  active = vim.tbl_filter(function(other)
-    return other ~= fill
-  end, active)
+---@return claude_fill.ProgressStatus
+local function status_of(outcome)
+  if outcome.kind == 'applied' then
+    return 'success'
+  elseif outcome.kind == 'failed' then
+    return 'failed'
+  end
+  return 'cancel'
 end
 
 ---@param outcome claude_fill.Outcome
@@ -84,10 +77,10 @@ end
 ---@param fill claude_fill.Fill
 ---@param outcome claude_fill.Outcome
 local function finish(fill, outcome)
-  leave_active(fill, outcome)
-  report(outcome)
-  indicator_mod.stop(fill.indicator, STATUS_OF_OUTCOME[outcome.kind])
+  states[fill] = nil
   target_mod.clear(fill.target)
+  report(outcome)
+  indicator_mod.stop(fill.indicator, status_of(outcome))
 end
 
 ---@param answer claude_fill.Answer|nil
@@ -134,7 +127,7 @@ end
 ---@param primer_id string
 local function refork(fill, primer_id)
   primer.invalidate(fill.project_root, primer_id)
-  await_primer(fill, 'retry')
+  states[fill] = await_primer(fill, 'retry')
 end
 
 ---@param event claude_fill.Crashed
@@ -148,7 +141,7 @@ end
 ---@param event claude_fill.Event
 ---@param context claude_fill.RunContext
 local function handle_event(fill, event, context)
-  if fill.state.kind == 'finished' then
+  if not states[fill] then
     return
   end
   if event.kind == 'step' then
@@ -198,19 +191,20 @@ end
 
 ---@param fill claude_fill.Fill
 ---@param context claude_fill.RunContext
+---@return claude_fill.FillState
 local function run_forked(fill, context)
   local spec = run_spec(fill.target, fill.project_root, fill.instruction, context.primer_id)
   local run = cli.run(spec, function(event)
     handle_event(fill, event, context)
   end)
-  fill.state = { kind = 'running', run = run }
+  return { kind = 'running', run = run }
 end
 
 ---@param fill claude_fill.Fill
 ---@param attempt claude_fill.Attempt
 ---@param result claude_fill.PrimerResult
 local function on_primer(fill, attempt, result)
-  if fill.state.kind == 'finished' then
+  if not states[fill] then
     return
   end
   if result.kind == 'failed' then
@@ -219,16 +213,17 @@ local function on_primer(fill, attempt, result)
   if not target_mod.span(fill.target) then
     return finish(fill, { kind = 'failed', message = 'target no longer exists' })
   end
-  run_forked(fill, { primer_id = result.session_id, attempt = attempt })
+  states[fill] = run_forked(fill, { primer_id = result.session_id, attempt = attempt })
 end
 
 ---@param fill claude_fill.Fill
 ---@param attempt claude_fill.Attempt
+---@return claude_fill.FillState
 function await_primer(fill, attempt)
   local handle = primer.acquire(fill.project_root, function(result)
     on_primer(fill, attempt, result)
   end)
-  fill.state = { kind = 'awaiting_primer', handle = handle }
+  return { kind = 'awaiting_primer', handle = handle }
 end
 
 ---@param target claude_fill.Target
@@ -241,10 +236,8 @@ local function launch(target, project_root, instruction)
     project_root = project_root,
     instruction = instruction,
     indicator = indicator_mod.start(target, instruction),
-    state = { kind = 'awaiting_primer', handle = { leave = function() end } },
   }
-  table.insert(active, fill)
-  await_primer(fill, 'first')
+  states[fill] = await_primer(fill, 'first')
 end
 
 ---@param state claude_fill.FillState
@@ -258,46 +251,42 @@ end
 
 ---@param fill claude_fill.Fill
 function M.cancel(fill)
-  if fill.state.kind == 'finished' then
+  local state = states[fill]
+  if not state then
     return
   end
-  stop_work(fill.state)
+  stop_work(state)
   finish(fill, { kind = 'cancelled' })
 end
 
 ---@param predicate fun(fill: claude_fill.Fill): boolean
----@return claude_fill.Fill|nil
-local function find_active(predicate)
-  for _, fill in ipairs(active) do
+---@return boolean cancelled
+local function cancel_first(predicate)
+  for fill in pairs(states) do
     if predicate(fill) then
-      return fill
+      M.cancel(fill)
+      return true
     end
   end
+  return false
 end
 
 ---@param progress_id integer
----@return boolean cancelled
 function M.cancel_by_progress(progress_id)
-  local fill = find_active(function(candidate)
-    return candidate.indicator.progress_id == progress_id
+  cancel_first(function(fill)
+    return fill.indicator.progress_id == progress_id
   end)
-  if fill then
-    M.cancel(fill)
-  end
-  return fill ~= nil
 end
 
 ---@param buf integer
 ---@param row integer 0-based
 ---@return boolean cancelled
 function M.cancel_at(buf, row)
-  local fill = find_active(function(candidate)
-    return candidate.target.buf == buf and target_mod.touches_row(candidate.target, row)
+  return cancel_first(function(fill)
+    return fill.target.buf == buf and target_mod.contains_row(fill.target, row)
+  end) or cancel_first(function(fill)
+    return fill.target.buf == buf and target_mod.is_insertion_above(fill.target, row)
   end)
-  if fill then
-    M.cancel(fill)
-  end
-  return fill ~= nil
 end
 
 ---@param target claude_fill.Target
