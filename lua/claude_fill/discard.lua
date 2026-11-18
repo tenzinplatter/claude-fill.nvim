@@ -3,7 +3,11 @@ local config = require('claude_fill.config')
 ---@class claude_fill.SavedReplacement
 ---@field kind 'saved'
 ---@field register claude_fill.Register
----@field unavailable claude_fill.Register|nil
+---@field replacing string|nil
+
+---@class claude_fill.FallbackReplacement
+---@field kind 'fallback'
+---@field wanted '+'|'*'
 ---@field replacing string|nil
 
 ---@class claude_fill.EmptyReplacement
@@ -12,7 +16,7 @@ local config = require('claude_fill.config')
 ---@class claude_fill.NoReplacement
 ---@field kind 'none'
 
----@alias claude_fill.SaveResult claude_fill.SavedReplacement|claude_fill.EmptyReplacement
+---@alias claude_fill.SaveResult claude_fill.SavedReplacement|claude_fill.FallbackReplacement|claude_fill.EmptyReplacement
 ---@alias claude_fill.DiscardedReplacement claude_fill.SaveResult|claude_fill.NoReplacement
 
 ---@class claude_fill.Deposit
@@ -42,18 +46,14 @@ end
 
 ---@param register claude_fill.Register
 ---@return boolean
-local function is_available(register)
-  return vim.fn.has('clipboard') == 1 or not register:match('^[+*]$')
+local function is_clipboard(register)
+  return register:match('^[+*]$') ~= nil
 end
 
----@param configured claude_fill.Register
----@return claude_fill.Register register
----@return claude_fill.Register|nil unavailable
-local function writable_register(configured)
-  if is_available(configured) then
-    return configured, nil
-  end
-  return FALLBACK_REGISTER, configured
+---@param register claude_fill.Register
+---@return boolean
+local function is_available(register)
+  return vim.fn.has('clipboard') == 1 or not is_clipboard(register)
 end
 
 ---@param instruction string
@@ -67,6 +67,16 @@ local function deposit(instruction, lines, register)
   return replacing
 end
 
+---@param configured claude_fill.Register
+---@param replacing string|nil
+---@return claude_fill.SavedReplacement|claude_fill.FallbackReplacement
+local function outcome(configured, replacing)
+  if is_available(configured) then
+    return { kind = 'saved', register = configured, replacing = replacing }
+  end
+  return { kind = 'fallback', wanted = configured, replacing = replacing }
+end
+
 ---@param instruction string
 ---@param lines string[]
 ---@return claude_fill.SaveResult
@@ -74,25 +84,33 @@ function M.save(instruction, lines)
   if #lines == 0 then
     return { kind = 'empty' }
   end
-  local register, unavailable = writable_register(config.get().discard_register)
-  return {
-    kind = 'saved',
-    register = register,
-    unavailable = unavailable,
-    replacing = deposit(instruction, lines, register),
-  }
+  local configured = config.get().discard_register
+  local register = is_available(configured) and configured or FALLBACK_REGISTER
+  return outcome(configured, deposit(instruction, lines, register))
 end
 
----@param saved claude_fill.SavedReplacement
+---@param replacing string|nil
 ---@return string
-local function saved_detail(saved)
-  local fallback = saved.unavailable
-      and (' (no clipboard provider for register %s)'):format(saved.unavailable)
-    or ''
-  local replacing = saved.replacing
-      and (', replacing the replacement for %q'):format(saved.replacing)
-    or ''
-  return ('saved to register %s%s%s'):format(saved.register, fallback, replacing)
+local function replacing_detail(replacing)
+  return replacing and (', replacing the replacement for %q'):format(replacing) or ''
+end
+
+---@param replacement claude_fill.SavedReplacement|claude_fill.FallbackReplacement
+---@return string
+local function saved_detail(replacement)
+  if replacement.kind == 'saved' then
+    return ('saved to register %s%s'):format(
+      replacement.register,
+      replacing_detail(replacement.replacing)
+    )
+  elseif replacement.kind == 'fallback' then
+    return ('saved to register %s (no clipboard provider for register %s)%s'):format(
+      FALLBACK_REGISTER,
+      replacement.wanted,
+      replacing_detail(replacement.replacing)
+    )
+  end
+  error('unreachable replacement kind')
 end
 
 ---@param instruction string

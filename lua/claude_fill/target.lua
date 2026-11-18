@@ -188,7 +188,7 @@ end
 local function watch_insertion(target)
   ---@type claude_fill.InsertionWatch
   local watch = { status = 'tracking' }
-  vim.api.nvim_buf_attach(target.buf, false, {
+  local attached = vim.api.nvim_buf_attach(target.buf, false, {
     on_bytes = function(_, _, _, start_row, start_col, _, old_end_row, old_end_col)
       if watch.status == 'tracking' then
         observe_removal(target, watch, removed_span(start_row, start_col, old_end_row, old_end_col))
@@ -202,6 +202,9 @@ local function watch_insertion(target)
       displace(watch)
     end,
   })
+  if not attached then
+    watch.status = 'displaced'
+  end
   return watch
 end
 
