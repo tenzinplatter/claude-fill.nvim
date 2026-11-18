@@ -32,7 +32,13 @@ local target_mod = require('claude_fill.target')
 ---@field instruction string
 ---@field replacement claude_fill.DiscardedReplacement
 
----@alias claude_fill.Outcome claude_fill.Applied|claude_fill.Failed|claude_fill.Cancelled|claude_fill.Declined|claude_fill.Discarded
+---@class claude_fill.Unwritten
+---@field kind 'unwritten'
+---@field instruction string
+---@field reason string
+---@field replacement claude_fill.SaveResult
+
+---@alias claude_fill.Outcome claude_fill.Applied|claude_fill.Failed|claude_fill.Unwritten|claude_fill.Cancelled|claude_fill.Declined|claude_fill.Discarded
 ---@alias claude_fill.Attempt 'first'|'retry'
 ---@alias claude_fill.Resolution claude_fill.Lines|claude_fill.Failed|claude_fill.Declined
 
@@ -91,7 +97,7 @@ local function status_of(outcome)
   local kind = outcome.kind
   if kind == 'applied' then
     return 'success'
-  elseif kind == 'failed' or kind == 'declined' or kind == 'discarded' then
+  elseif kind == 'failed' or kind == 'unwritten' or kind == 'declined' or kind == 'discarded' then
     return 'failed'
   elseif kind == 'cancelled' then
     return 'cancel'
@@ -99,10 +105,22 @@ local function status_of(outcome)
   error('unhandled outcome ' .. kind)
 end
 
+---@param outcome claude_fill.Unwritten
+---@return string
+local function unwritten_message(outcome)
+  return ('could not write replacement for %q: %s; %s'):format(
+    outcome.instruction,
+    outcome.reason,
+    discard.detail(outcome.replacement)
+  )
+end
+
 ---@param outcome claude_fill.Outcome
 local function report(outcome)
   if outcome.kind == 'failed' then
     notify.error(outcome.message)
+  elseif outcome.kind == 'unwritten' then
+    notify.error(unwritten_message(outcome))
   elseif outcome.kind == 'declined' then
     notify.warn(('declined %q: %s'):format(outcome.instruction, outcome.reason))
   elseif outcome.kind == 'discarded' then
@@ -134,24 +152,55 @@ end
 
 ---@param fill claude_fill.Fill
 ---@param lines string[]
+---@return claude_fill.SaveResult|claude_fill.Failed
+local function save(fill, lines)
+  local ok, replacement = pcall(discard.save, fill.instruction, lines)
+  if ok then
+    return replacement
+  end
+  ---@type claude_fill.Failed
+  local failed =
+    { kind = 'failed', message = 'could not save replacement: ' .. tostring(replacement) }
+  return failed
+end
+
+---@param fill claude_fill.Fill
+---@param lines string[]
+---@param reason string
+---@return claude_fill.Outcome
+local function keep_unwritten(fill, lines, reason)
+  local saved = save(fill, lines)
+  if saved.kind == 'failed' then
+    return saved
+  end
+  ---@type claude_fill.Unwritten
+  local unwritten =
+    { kind = 'unwritten', instruction = fill.instruction, reason = reason, replacement = saved }
+  return unwritten
+end
+
+---@param fill claude_fill.Fill
+---@param lines string[]
 ---@return claude_fill.Outcome
 local function write(fill, lines)
   local ok, err = pcall(target_mod.replace, target_of(fill), lines)
   if ok then
     return { kind = 'applied' }
   end
-  return { kind = 'failed', message = 'could not write replacement: ' .. tostring(err) }
+  return keep_unwritten(fill, lines, tostring(err))
 end
 
 ---@param fill claude_fill.Fill
 ---@param lines string[]
 ---@return claude_fill.Outcome
 local function discard_lines(fill, lines)
-  local ok, replacement = pcall(discard.save, fill.instruction, lines)
-  if not ok then
-    return { kind = 'failed', message = 'could not save replacement: ' .. tostring(replacement) }
+  local saved = save(fill, lines)
+  if saved.kind == 'failed' then
+    return saved
   end
-  return { kind = 'discarded', instruction = fill.instruction, replacement = replacement }
+  ---@type claude_fill.Discarded
+  local discarded = { kind = 'discarded', instruction = fill.instruction, replacement = saved }
+  return discarded
 end
 
 ---@param fill claude_fill.Fill

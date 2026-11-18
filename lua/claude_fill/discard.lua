@@ -131,6 +131,15 @@ local function saved_detail(replacement)
   error('unreachable replacement kind')
 end
 
+---@param replacement claude_fill.SaveResult
+---@return string
+function M.detail(replacement)
+  if replacement.kind == 'empty' then
+    return 'nothing to save'
+  end
+  return saved_detail(replacement)
+end
+
 ---@param instruction string
 ---@param replacement claude_fill.DiscardedReplacement
 ---@return string
@@ -140,11 +149,10 @@ function M.message(instruction, replacement)
       instruction
     )
   end
-  local head = ('target changed or was removed; replacement for %q not applied'):format(instruction)
-  if replacement.kind == 'empty' then
-    return head .. ' (nothing to save)'
-  end
-  return ('%s; %s'):format(head, saved_detail(replacement))
+  return ('target changed or was removed; replacement for %q not applied; %s'):format(
+    instruction,
+    M.detail(replacement)
+  )
 end
 
 return M
