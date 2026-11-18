@@ -105,6 +105,26 @@ local function status_of(outcome)
   error('unhandled outcome ' .. kind)
 end
 
+---@param outcome claude_fill.Outcome
+---@return string
+local function label_of(outcome)
+  local kind = outcome.kind
+  if kind == 'applied' then
+    return 'applied'
+  elseif kind == 'failed' then
+    return 'failed'
+  elseif kind == 'unwritten' then
+    return 'not written'
+  elseif kind == 'cancelled' then
+    return 'cancelled'
+  elseif kind == 'declined' then
+    return 'declined'
+  elseif kind == 'discarded' then
+    return 'discarded'
+  end
+  error('unhandled outcome ' .. kind)
+end
+
 ---@param outcome claude_fill.Unwritten
 ---@return string
 local function unwritten_message(outcome)
@@ -134,7 +154,7 @@ local function finish(fill, outcome)
   states[fill] = nil
   target_mod.release(fill.snapshot)
   report(outcome)
-  indicator_mod.stop(fill.indicator, status_of(outcome))
+  indicator_mod.stop(fill.indicator, status_of(outcome), label_of(outcome))
 end
 
 ---@param answer claude_fill.Answer|nil

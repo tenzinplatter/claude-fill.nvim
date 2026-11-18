@@ -136,7 +136,8 @@ end
 
 ---@param indicator claude_fill.Indicator
 ---@param status claude_fill.ProgressStatus
-function M.stop(indicator, status)
+---@param text string
+function M.stop(indicator, status, text)
   local state = indicator.state
   if state.kind == 'stopped' then
     return
@@ -147,7 +148,7 @@ function M.stop(indicator, status)
   if vim.api.nvim_buf_is_valid(indicator.target.buf) then
     vim.api.nvim_buf_del_extmark(indicator.target.buf, NS, indicator.mark)
   end
-  echo_progress(indicator.title, status, status, indicator.progress_id)
+  echo_progress(indicator.title, text, status, indicator.progress_id)
 end
 
 return M
