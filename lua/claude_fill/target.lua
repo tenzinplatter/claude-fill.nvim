@@ -14,6 +14,7 @@ local function create(buf, first, stop)
   local mark = vim.api.nvim_buf_set_extmark(buf, NS, first, 0, {
     end_row = stop,
     end_col = 0,
+    end_right_gravity = first == stop,
     strict = false,
   })
   return { buf = buf, mark = mark }
@@ -46,7 +47,7 @@ function M.span(target)
   if #details == 0 then
     return nil, nil
   end
-  return math.min(details[1], details[3].end_row), math.max(details[1], details[3].end_row)
+  return details[1], math.max(details[1], details[3].end_row)
 end
 
 ---@param target claude_fill.Target
@@ -94,6 +95,33 @@ function M.overlaps(a, b)
   return a_first < b_end and b_first < a_end
 end
 
+---@class claude_fill.TargetSnapshot
+---@field target claude_fill.Target
+---@field lines string[]
+
+---@param target claude_fill.Target
+---@return claude_fill.TargetSnapshot
+function M.snapshot(target)
+  return { target = target, lines = M.lines(target) }
+end
+
+---@param snapshot claude_fill.TargetSnapshot
+---@return claude_fill.Target
+function M.of(snapshot)
+  return snapshot.target
+end
+
+---@param snapshot claude_fill.TargetSnapshot
+---@return boolean
+function M.edited_since(snapshot)
+  local first, stop = M.span(snapshot.target)
+  if not (first and stop) then
+    return true
+  end
+  local lines = vim.api.nvim_buf_get_lines(snapshot.target.buf, first, stop, false)
+  return not vim.deep_equal(lines, snapshot.lines)
+end
+
 ---@param target claude_fill.Target
 ---@param row integer 0-based
 ---@return boolean
@@ -127,17 +155,18 @@ end
 ---@field target string[]
 ---@field after string[]
 
----@param target claude_fill.Target
+---@param snapshot claude_fill.TargetSnapshot
 ---@param project_root string
 ---@return claude_fill.TargetContext
-function M.context(target, project_root)
+function M.context(snapshot, project_root)
+  local target = snapshot.target
   local absolute = vim.api.nvim_buf_get_name(target.buf)
   local before, after = M.surroundings(target)
   return {
     path = vim.fs.relpath(project_root, absolute) or absolute,
     filetype = vim.bo[target.buf].filetype,
     before = before,
-    target = M.lines(target),
+    target = snapshot.lines,
     after = after,
   }
 end

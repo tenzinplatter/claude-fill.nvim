@@ -18,7 +18,7 @@ end
 ---@param target claude_fill.Target
 ---@param instruction string
 local function start_with(target, instruction)
-  if instruction == '' then
+  if vim.trim(instruction) == '' then
     return target_mod.clear(target)
   end
   require('claude_fill.fill').start(target, instruction)

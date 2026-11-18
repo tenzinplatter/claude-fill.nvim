@@ -1,13 +1,17 @@
+---@alias claude_fill.Register '"'|'+'|'*'|'-'|'a'|'b'|'c'|'d'|'e'|'f'|'g'|'h'|'i'|'j'|'k'|'l'|'m'|'n'|'o'|'p'|'q'|'r'|'s'|'t'|'u'|'v'|'w'|'x'|'y'|'z'|'A'|'B'|'C'|'D'|'E'|'F'|'G'|'H'|'I'|'J'|'K'|'L'|'M'|'N'|'O'|'P'|'Q'|'R'|'S'|'T'|'U'|'V'|'W'|'X'|'Y'|'Z'
+
 ---@class claude_fill.Config
 ---@field model string
 ---@field tools string[]
 ---@field allowed_tools string[]
+---@field discard_register claude_fill.Register
 ---@field primer_prompt? string
 
 ---@class claude_fill.UserConfig
 ---@field model? string
 ---@field tools? string[]
 ---@field allowed_tools? string[]
+---@field discard_register? claude_fill.Register
 ---@field primer_prompt? string
 
 local M = {}
@@ -15,6 +19,7 @@ local M = {}
 ---@type claude_fill.Config
 local DEFAULTS = {
   model = 'sonnet',
+  discard_register = 'z',
   tools = { 'Read', 'Grep', 'Glob', 'WebFetch', 'WebSearch', 'Bash' },
   allowed_tools = {
     'Read',
@@ -33,9 +38,18 @@ local DEFAULTS = {
 ---@type claude_fill.Config
 local current = vim.deepcopy(DEFAULTS)
 
+---@param register any
+local function validate_register(register)
+  if type(register) ~= 'string' or not register:match('^[%a"+*-]$') then
+    error(('claude-fill: discard_register must name a writable register, got %s'):format(vim.inspect(register)))
+  end
+end
+
 ---@param user? claude_fill.UserConfig
 function M.setup(user)
-  current = vim.tbl_deep_extend('force', vim.deepcopy(DEFAULTS), user or {})
+  local merged = vim.tbl_deep_extend('force', vim.deepcopy(DEFAULTS), user or {})
+  validate_register(merged.discard_register)
+  current = merged
 end
 
 ---@return claude_fill.Config
