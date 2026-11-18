@@ -68,7 +68,7 @@ end
 local function conflicting_target(target)
   for fill in pairs(states) do
     local active = target_of(fill)
-    if target_mod.span(active) and target_mod.overlaps(active, target) then
+    if target_mod.overlaps(active, target) then
       return active
     end
   end
@@ -186,6 +186,15 @@ local function crash_outcome(event)
   return { kind = 'failed', message = cli.crash_message(event) }
 end
 
+---@param instruction string
+---@return claude_fill.Discarded
+local function unproduced(instruction)
+  ---@type claude_fill.Discarded
+  local discarded =
+    { kind = 'discarded', instruction = instruction, replacement = { kind = 'none' } }
+  return discarded
+end
+
 ---@param fill claude_fill.Fill
 ---@param primer_id string
 local function refork(fill, primer_id)
@@ -246,11 +255,18 @@ local function run_spec(snapshot, project_root, instruction, primer_id)
   }
 end
 
----@param target claude_fill.Target
+---@param snapshot claude_fill.TargetSnapshot
 ---@param message string
-local function reject(target, message)
-  target_mod.clear(target)
+local function reject(snapshot, message)
+  target_mod.release(snapshot)
   notify.error(message)
+end
+
+---@param snapshot claude_fill.TargetSnapshot
+---@param instruction string
+local function abandon(snapshot, instruction)
+  target_mod.release(snapshot)
+  report(unproduced(instruction))
 end
 
 ---@param fill claude_fill.Fill
@@ -275,11 +291,7 @@ local function on_primer(fill, attempt, result)
     return finish(fill, { kind = 'failed', message = result.message })
   end
   if target_mod.edited_since(fill.snapshot) then
-    return finish(fill, {
-      kind = 'discarded',
-      instruction = fill.instruction,
-      replacement = { kind = 'none' },
-    })
+    return finish(fill, unproduced(fill.instruction))
   end
   states[fill] = run_forked(fill, { primer_id = result.session_id, attempt = attempt })
 end
@@ -294,13 +306,14 @@ function await_primer(fill, attempt)
   return { kind = 'awaiting_primer', handle = handle }
 end
 
----@param target claude_fill.Target
+---@param snapshot claude_fill.TargetSnapshot
 ---@param project_root string
 ---@param instruction string
-local function launch(target, project_root, instruction)
+local function launch(snapshot, project_root, instruction)
+  local target = target_mod.of(snapshot)
   ---@type claude_fill.Fill
   local fill = {
-    snapshot = target_mod.snapshot(target),
+    snapshot = snapshot,
     project_root = project_root,
     instruction = instruction,
     indicator = indicator_mod.start(target, instruction),
@@ -355,22 +368,26 @@ function M.cancel_at(buf, row)
     return target.buf == buf and target_mod.contains_row(target, row)
   end) or cancel_first(function(fill)
     local target = target_of(fill)
-    return target.buf == buf and target_mod.is_insertion_above(target, row)
+    return target.buf == buf and target_mod.inserts_below(target, row)
   end)
 end
 
----@param target claude_fill.Target
+---@param snapshot claude_fill.TargetSnapshot
 ---@param instruction string
-function M.start(target, instruction)
+function M.start(snapshot, instruction)
+  local target = target_mod.of(snapshot)
   local project_root = root.of_buffer(target.buf)
   if not project_root then
-    return reject(target, 'buffer is not a file inside a git repository')
+    return reject(snapshot, 'buffer is not a file inside a git repository')
+  end
+  if target_mod.edited_since(snapshot) then
+    return abandon(snapshot, instruction)
   end
   local active = conflicting_target(target)
   if active then
-    return reject(target, conflict_message(target, active))
+    return reject(snapshot, conflict_message(target, active))
   end
-  launch(target, project_root, instruction)
+  launch(snapshot, project_root, instruction)
 end
 
 return M

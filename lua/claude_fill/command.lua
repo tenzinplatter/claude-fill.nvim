@@ -15,13 +15,13 @@ local function target_of(opts)
   return target_mod.from_range(buf, opts.line1, opts.line2)
 end
 
----@param target claude_fill.Target
+---@param snapshot claude_fill.TargetSnapshot
 ---@param instruction string
-local function start_with(target, instruction)
+local function start_with(snapshot, instruction)
   if vim.trim(instruction) == '' then
-    return target_mod.clear(target)
+    return target_mod.release(snapshot)
   end
-  require('claude_fill.fill').start(target, instruction)
+  require('claude_fill.fill').start(snapshot, instruction)
 end
 
 ---@param opts vim.api.keyset.create_user_command.command_args
@@ -62,12 +62,12 @@ local function run(opts)
   if opts.args == 'cancel' then
     return cancel(opts)
   end
-  local target = target_of(opts)
+  local snapshot = target_mod.snapshot(target_of(opts))
   if opts.args ~= '' then
-    return start_with(target, opts.args)
+    return start_with(snapshot, opts.args)
   end
   vim.ui.input({ prompt = 'Claude fill: ' }, function(input)
-    start_with(target, input or '')
+    start_with(snapshot, input or '')
   end)
 end
 

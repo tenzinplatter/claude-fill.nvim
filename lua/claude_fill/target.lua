@@ -1,53 +1,87 @@
----@class claude_fill.Target
+---@class claude_fill.RangeTarget
+---@field kind 'range'
 ---@field buf integer
 ---@field mark integer
+
+---@class claude_fill.InsertionTarget
+---@field kind 'insertion'
+---@field buf integer
+---@field mark integer
+
+---@alias claude_fill.Target claude_fill.RangeTarget|claude_fill.InsertionTarget
 
 local M = {}
 
 local NS = vim.api.nvim_create_namespace('claude_fill.target')
 
 ---@param buf integer
----@param first integer 0-based first row
----@param stop integer 0-based exclusive end row
----@return claude_fill.Target
-local function create(buf, first, stop)
-  local mark = vim.api.nvim_buf_set_extmark(buf, NS, first, 0, {
-    end_row = stop,
-    end_col = 0,
-    end_right_gravity = first == stop,
-    strict = false,
-  })
-  return { buf = buf, mark = mark }
-end
-
----@param buf integer
 ---@param line1 integer 1-based first line
 ---@param line2 integer 1-based last line
----@return claude_fill.Target
+---@return claude_fill.RangeTarget
 function M.from_range(buf, line1, line2)
-  return create(buf, line1 - 1, line2)
+  ---@type claude_fill.RangeTarget
+  local target = {
+    kind = 'range',
+    buf = buf,
+    mark = vim.api.nvim_buf_set_extmark(buf, NS, line1 - 1, 0, {
+      end_row = line2,
+      end_col = 0,
+      strict = false,
+    }),
+  }
+  return target
 end
 
 ---@param buf integer
 ---@param line integer 1-based cursor line; the Target is the empty region below it
----@return claude_fill.Target
+---@return claude_fill.InsertionTarget
 function M.at_cursor(buf, line)
-  return create(buf, line, line)
+  ---@type claude_fill.InsertionTarget
+  local target = {
+    kind = 'insertion',
+    buf = buf,
+    mark = vim.api.nvim_buf_set_extmark(buf, NS, line, 0, { strict = false }),
+  }
+  return target
+end
+
+---@param target claude_fill.Target
+---@return [integer, integer, vim.api.keyset.extmark_details?]|nil
+local function placement(target)
+  if not vim.api.nvim_buf_is_valid(target.buf) then
+    return nil
+  end
+  local position =
+    vim.api.nvim_buf_get_extmark_by_id(target.buf, NS, target.mark, { details = true })
+  if #position == 0 then
+    return nil
+  end
+  return position
+end
+
+---@param first integer
+---@param stop integer
+---@return integer|nil first
+---@return integer|nil stop
+local function unless_collapsed(first, stop)
+  if stop <= first then
+    return nil, nil
+  end
+  return first, stop
 end
 
 ---@param target claude_fill.Target
 ---@return integer|nil first 0-based first row
----@return integer|nil stop 0-based exclusive end row
+---@return integer|nil stop 0-based exclusive end row; nil when a range has collapsed
 function M.span(target)
-  if not vim.api.nvim_buf_is_valid(target.buf) then
+  local position = placement(target)
+  if not position then
     return nil, nil
   end
-  local details =
-    vim.api.nvim_buf_get_extmark_by_id(target.buf, NS, target.mark, { details = true })
-  if #details == 0 then
-    return nil, nil
+  if target.kind == 'insertion' then
+    return position[1], position[1]
   end
-  return details[1], math.max(details[1], details[3].end_row)
+  return unless_collapsed(position[1], assert(position[3]).end_row)
 end
 
 ---@param target claude_fill.Target
@@ -82,6 +116,30 @@ function M.replace(target, lines)
   vim.api.nvim_buf_set_lines(target.buf, first, stop, false, lines)
 end
 
+---@class claude_fill.Rows
+---@field first integer 0-based first row
+---@field stop integer 0-based exclusive end row
+
+---@param target claude_fill.Target
+---@return claude_fill.Rows|nil
+local function footprint(target)
+  local first, stop = M.span(target)
+  if not first or not stop then
+    return nil
+  end
+  if target.kind == 'insertion' then
+    return { first = first, stop = first + 1 }
+  end
+  return { first = first, stop = stop }
+end
+
+---@param x claude_fill.Rows
+---@param y claude_fill.Rows
+---@return boolean
+local function intersects(x, y)
+  return x.first < y.stop and y.first < x.stop
+end
+
 ---@param a claude_fill.Target
 ---@param b claude_fill.Target
 ---@return boolean
@@ -89,10 +147,8 @@ function M.overlaps(a, b)
   if a.buf ~= b.buf then
     return false
   end
-  local a_first, a_stop = must_span(a)
-  local b_first, b_stop = must_span(b)
-  local a_end, b_end = math.max(a_stop, a_first + 1), math.max(b_stop, b_first + 1)
-  return a_first < b_end and b_first < a_end
+  local a_rows, b_rows = footprint(a), footprint(b)
+  return a_rows ~= nil and b_rows ~= nil and intersects(a_rows, b_rows)
 end
 
 ---@class claude_fill.Position
@@ -106,12 +162,12 @@ end
 
 ---@class claude_fill.RangeSnapshot
 ---@field package kind 'range'
----@field package target claude_fill.Target
+---@field package target claude_fill.RangeTarget
 ---@field package lines string[]
 
 ---@class claude_fill.InsertionSnapshot
 ---@field package kind 'insertion'
----@field package target claude_fill.Target
+---@field package target claude_fill.InsertionTarget
 ---@field package watch claude_fill.InsertionWatch
 
 ---@alias claude_fill.TargetSnapshot claude_fill.RangeSnapshot|claude_fill.InsertionSnapshot
@@ -183,7 +239,7 @@ local function observe_removal(target, watch, first, stop)
   end
 end
 
----@param target claude_fill.Target
+---@param target claude_fill.InsertionTarget
 ---@return claude_fill.InsertionWatch
 local function watch_insertion(target)
   ---@type claude_fill.InsertionWatch
@@ -211,11 +267,14 @@ end
 ---@param target claude_fill.Target
 ---@return claude_fill.TargetSnapshot
 function M.snapshot(target)
-  local first, stop = must_span(target)
-  if first == stop then
-    return { kind = 'insertion', target = target, watch = watch_insertion(target) }
+  if target.kind == 'insertion' then
+    ---@type claude_fill.InsertionSnapshot
+    local insertion = { kind = 'insertion', target = target, watch = watch_insertion(target) }
+    return insertion
   end
-  return { kind = 'range', target = target, lines = M.lines(target) }
+  ---@type claude_fill.RangeSnapshot
+  local range = { kind = 'range', target = target, lines = M.lines(target) }
+  return range
 end
 
 ---@param snapshot claude_fill.TargetSnapshot
@@ -266,28 +325,23 @@ function M.adjoins_start(a, b)
   if a.buf ~= b.buf then
     return false
   end
-  local a_first, a_stop = must_span(a)
-  local b_first, b_stop = must_span(b)
-  return (a_first == a_stop) ~= (b_first == b_stop) and a_first == b_first
+  local a_rows, b_rows = footprint(a), footprint(b)
+  return a.kind ~= b.kind and a_rows ~= nil and b_rows ~= nil and a_rows.first == b_rows.first
 end
 
 ---@param target claude_fill.Target
 ---@param row integer 0-based
 ---@return boolean
 function M.contains_row(target, row)
-  local first, stop = M.span(target)
-  if not first or not stop then
-    return false
-  end
-  return row >= first and row < math.max(stop, first + 1)
+  local rows = footprint(target)
+  return rows ~= nil and rows.first <= row and row < rows.stop
 end
 
 ---@param target claude_fill.Target
 ---@param row integer 0-based
 ---@return boolean
-function M.is_insertion_above(target, row)
-  local first, stop = M.span(target)
-  return first ~= nil and first == stop and row == first - 1
+function M.inserts_below(target, row)
+  return target.kind == 'insertion' and M.span(target) == row + 1
 end
 
 ---@param target claude_fill.Target
