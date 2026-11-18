@@ -35,18 +35,33 @@ function M.at_cursor(buf, line)
 end
 
 ---@param target claude_fill.Target
----@return integer first 0-based first row
----@return integer stop 0-based exclusive end row
+---@return integer|nil first 0-based first row
+---@return integer|nil stop 0-based exclusive end row
 function M.span(target)
+  if not vim.api.nvim_buf_is_valid(target.buf) then
+    return nil, nil
+  end
   local details =
     vim.api.nvim_buf_get_extmark_by_id(target.buf, NS, target.mark, { details = true })
+  if #details == 0 then
+    return nil, nil
+  end
   return math.min(details[1], details[3].end_row), math.max(details[1], details[3].end_row)
+end
+
+---@param target claude_fill.Target
+---@return integer first
+---@return integer stop
+local function must_span(target)
+  local first, stop = M.span(target)
+  assert(first and stop, 'target no longer exists')
+  return first, stop
 end
 
 ---@param target claude_fill.Target
 ---@return string[]
 function M.lines(target)
-  local first, stop = M.span(target)
+  local first, stop = must_span(target)
   return vim.api.nvim_buf_get_lines(target.buf, first, stop, false)
 end
 
@@ -54,7 +69,7 @@ end
 ---@return string[] before
 ---@return string[] after
 function M.surroundings(target)
-  local first, stop = M.span(target)
+  local first, stop = must_span(target)
   return vim.api.nvim_buf_get_lines(target.buf, 0, first, false),
     vim.api.nvim_buf_get_lines(target.buf, stop, -1, false)
 end
@@ -62,7 +77,7 @@ end
 ---@param target claude_fill.Target
 ---@param lines string[]
 function M.replace(target, lines)
-  local first, stop = M.span(target)
+  local first, stop = must_span(target)
   vim.api.nvim_buf_set_lines(target.buf, first, stop, false, lines)
 end
 
@@ -73,8 +88,8 @@ function M.overlaps(a, b)
   if a.buf ~= b.buf then
     return false
   end
-  local a_first, a_stop = M.span(a)
-  local b_first, b_stop = M.span(b)
+  local a_first, a_stop = must_span(a)
+  local b_first, b_stop = must_span(b)
   local a_end, b_end = math.max(a_stop, a_first + 1), math.max(b_stop, b_first + 1)
   return a_first < b_end and b_first < a_end
 end

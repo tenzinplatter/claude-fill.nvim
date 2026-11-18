@@ -57,6 +57,9 @@ local function render(indicator)
     return
   end
   local first, stop = target_mod.span(indicator.target)
+  if not first or not stop then
+    return
+  end
   local last_row = math.max(vim.api.nvim_buf_line_count(buf) - 1, 0)
   local row = math.min(first, last_row)
   indicator.frame = indicator.frame % #FRAMES + 1

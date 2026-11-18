@@ -53,15 +53,19 @@ function M.argv(spec)
   return argv
 end
 
----@type table<string, string[]>
-local SESSION_FLAGS = {
-  ephemeral = { '--no-session-persistence' },
-}
+---@param session claude_fill.Session
+---@return string[]
+local function session_flags(session)
+  if session.kind == 'ephemeral' then
+    return { '--no-session-persistence' }
+  end
+  error('unhandled session kind: ' .. tostring(session.kind))
+end
 
 ---@param spec claude_fill.RunSpec
 ---@return string[]
 local function full_argv(spec)
-  return vim.list_extend(M.argv(spec), SESSION_FLAGS[spec.session.kind])
+  return vim.list_extend(M.argv(spec), session_flags(spec.session))
 end
 
 ---@param on_line fun(line: string)

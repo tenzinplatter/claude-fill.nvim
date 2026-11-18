@@ -5,13 +5,19 @@ local prompt = require('claude_fill.prompt')
 local root = require('claude_fill.root')
 local target_mod = require('claude_fill.target')
 
----@alias claude_fill.Outcome
----| { kind: 'applied' }
----| { kind: 'failed', message: string }
+---@class claude_fill.Applied
+---@field kind 'applied'
 
----@alias claude_fill.Resolution
----| { kind: 'lines', lines: string[] }
----| claude_fill.Outcome
+---@class claude_fill.Failed
+---@field kind 'failed'
+---@field message string
+
+---@class claude_fill.Lines
+---@field kind 'lines'
+---@field lines string[]
+
+---@alias claude_fill.Outcome claude_fill.Applied|claude_fill.Failed
+---@alias claude_fill.Resolution claude_fill.Lines|claude_fill.Failed
 
 ---@class claude_fill.Fill
 ---@field target claude_fill.Target
@@ -89,7 +95,7 @@ local function apply(fill, event)
   if resolution.kind == 'lines' then
     finish(fill, write(fill, resolution.lines))
   elseif resolution.kind == 'failed' then
-    finish(fill, { kind = 'failed', message = resolution.message })
+    finish(fill, resolution)
   end
 end
 
@@ -154,10 +160,11 @@ end
 ---@param project_root string
 ---@param instruction string
 local function launch(target, project_root, instruction)
+  local spec = run_spec(target, project_root, instruction)
   local indicator = indicator_mod.start(target)
   ---@type claude_fill.Fill
   local fill
-  local run = cli.run(run_spec(target, project_root, instruction), function(event)
+  local run = cli.run(spec, function(event)
     handle_event(fill, event)
   end)
   fill = { target = target, indicator = indicator, state = { kind = 'running', run = run } }
