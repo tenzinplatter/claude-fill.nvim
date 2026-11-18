@@ -28,7 +28,13 @@ function M.load()
   if not ok or type(decoded) ~= 'table' then
     return {}
   end
-  return vim.tbl_filter(is_record, decoded)
+  local records = {}
+  for project_root, record in pairs(decoded) do
+    if is_record(record) then
+      records[project_root] = record
+    end
+  end
+  return records
 end
 
 ---@param records table<string, claude_fill.PrimerRecord>
