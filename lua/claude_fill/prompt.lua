@@ -28,8 +28,7 @@ local PRIMER = table.concat({
   'Explore this project so that later requests to write code in it can be answered quickly.',
   'Read the top-level layout, the build and test configuration, the main modules,',
   'and any contributor docs such as CLAUDE.md or README files, and note the conventions in use.',
-  'You will not be asked to write code now; when finished, answer with kind "filled"',
-  'and an empty replacement.',
+  'You will not be asked to write code now.',
 }, ' ')
 
 ---@param override string|nil

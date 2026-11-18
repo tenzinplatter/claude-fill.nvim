@@ -187,12 +187,31 @@ local function start_build(project_root, previous)
   return waiters
 end
 
+---@param result claude_fill.PrimerResult
+local function report(result)
+  if result.kind == 'ready' then
+    vim.notify('claude-fill: primer ready')
+  else
+    vim.notify('claude-fill: ' .. result.message, vim.log.levels.ERROR)
+  end
+end
+
+---@param project_root string
+---@param primer claude_fill.ReadyPrimer
+local function rebuild_if_stale(project_root, primer)
+  if vim.deep_equal(primer.head, root.head(project_root)) then
+    return
+  end
+  add_waiter(start_build(project_root, primer), report)
+end
+
 ---@param project_root string
 ---@param waiter claude_fill.PrimerWaiter
 ---@return claude_fill.PrimerHandle
 function M.acquire(project_root, waiter)
   local state = state_of(project_root)
   if state.kind == 'ready' then
+    rebuild_if_stale(project_root, state)
     return deliver_later(waiter, { kind = 'ready', session_id = state.session_id })
   end
   if state.kind == 'rebuilding' then
@@ -217,20 +236,13 @@ function M.invalidate(project_root, session_id)
   end
 end
 
----@param result claude_fill.PrimerResult
-local function report(result)
-  if result.kind == 'ready' then
-    vim.notify('claude-fill: primer ready')
-  else
-    vim.notify('claude-fill: ' .. result.message, vim.log.levels.ERROR)
-  end
-end
-
 ---@param project_root string
 function M.prime(project_root)
   local state = state_of(project_root)
   if state.kind == 'building' or state.kind == 'rebuilding' then
-    return vim.notify('claude-fill: primer is already being built')
+    vim.notify('claude-fill: primer is already being built')
+    add_waiter(state.waiters, report)
+    return
   end
   vim.notify('claude-fill: priming ' .. project_root)
   add_waiter(start_build(project_root, state.kind == 'ready' and state or nil), report)
